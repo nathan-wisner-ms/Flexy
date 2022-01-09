@@ -16,7 +16,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(f'migration_{datetime.now().strftime("%Y-%m-%d")}.log'),
+        logging.FileHandler(f'migration_log_{datetime.now().strftime("%Y-%m-%d")}'),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -43,6 +43,7 @@ args = parser.parse_args()
 
 tasks_queue = Queue()
 project_id = ""
+job_number_dict = {}
 
 MIGRATION_CONFIG = helper.build_config(args.config_file)
 SOURCE_CONN_URL = helper.build_connection_string(MIGRATION_CONFIG["source"])
@@ -56,13 +57,15 @@ def execute_tasks(thread):
     global tasks_queue
     global project_id
     global target_connection_pool
+    global job_id_dict
 
     num_thread_jobs = 0
     while not tasks_queue.empty():
         thread_start_time = time.time()
         message = tasks_queue.get()
         num_thread_jobs += 1
-        helper.logging_thread(f"Pick up job message: {message}", thread)
+        job_number_dict[message] = len(job_number_dict) + 1
+        helper.logging_thread(f"Pick up job number: {job_number_dict[message]} message: {message}", thread)
         for i in range(1, 4):
             start_time = time.time()
             try:

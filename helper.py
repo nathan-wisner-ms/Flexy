@@ -14,7 +14,7 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(f'migration_{datetime.now().strftime("%Y-%m-%d")}.log'),
+        logging.FileHandler(f'migration_log_{datetime.now().strftime("%Y-%m-%d")}'),
         logging.StreamHandler(sys.stdout),
     ],
 )

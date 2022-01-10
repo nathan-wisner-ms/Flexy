@@ -30,8 +30,8 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         | line in file | translation in program |
         | -----------  |----------- |
         |`schemaname.tablename` |`SELECT * FROM schemaname.tablename`
-        |`schema.tablename\|columnname\|I\|interval_0,interval_1`|`SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0' AND columnname <= 'interval_1'`|
-        |`schema.tablename\|columnname\|I\|interval_0,`| `SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0'`|
+        |`schema.tablename\|columnname\|I\|interval_0,interval_1`|`SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0' AND columnname < 'interval_1'` <br>[inclusive lower bound, exclusive upper bound)|
+        |`schema.tablename\|columnname\|I\|interval_0,`| `SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0'` <br> [inclusive lower bound, no upper bound)|
         |`schema.tablename\|columnname\|V\|value`| `SELECT * FROM schemaname.tablename WHERE columnname = 'value'`|
     * Example file:
          ```

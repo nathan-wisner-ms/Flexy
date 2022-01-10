@@ -25,7 +25,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
                 * `schema_indexes_only_{config-file-name}.sql`
         <br> if `--indexes=True`: migrate with indexes
         <br> else: migrate with no indexes
-3. Create a file for tables to migrate:
+3. Create a file for selected tables to migrate:
     * Four different string formats are accepted in each line <br>
         | line in file | translation in program |
         | -----------  |----------- |
@@ -40,7 +40,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
          public.items|id|I|50000000,
          public.customers|country|V|US
          ```  
-    * Tips: <br>
+    * **NOTE**: <br>
          To speed up the migration process, you should generate the file sort by data size in descending 
           orders. You can query it by:
          ````
@@ -49,17 +49,18 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         FROM pg_catalog.pg_statio_user_tables
         ORDER BY data_size DESC;
          ````
-         <br> It's strongly recommend that you will chunk a large table into multiple migration jobs based on an indexed watermark column (e.g., id, timestemp) or some value that can segment the tables. The recommend size is under 20 GB for each partition. To check the partioned data size, you query it by:
+         It's strongly recommend that you will chunk a large table into multiple migration jobs based on an indexed watermark column (e.g., id, timestemp) or some value that can segment the tables. The recommend size is under 20 GB for each partition. To check the partioned data size, you query it by:
         ````
         CREATE TEMPORARY TABLE subset1 AS (
             SELECT * FROM table1 WHERE ...
         );
         SELECT pg_size_pretty(pg_relation_size('subset1'));
         ```` 
-        **NOTE**: Currently, you will be responsible for the validation of partion values, make sure the sets not overlap.
+        
+        Currently, you will be responsible for the validation of partion values, make sure the sets not overlap.
 4. Change server parameters in target database server:
     * Disable triggers and foreign keys validation by change server parameter `session_replication_role` TO `REPLICA` in target database server in global server level
-    * Increase `max_wal_size` to larget value
+    * Increase `max_wal_size` to largest value
     * Increase `maintenance_work_mem` to largest value
 6. (optional) Scale up vCores in source and target db server
 ---
@@ -79,9 +80,11 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * You can check logs saved in `migration_logs_{date}` during/after migration.
 * Monitor
     * Monitor CPUs in your source/target db servers
+* Add indexes during migration
+    * To reduce whole migration time, you can add indexes back for tables already finally complete while still migrating for other tables
 * Re-Run
     * Any migration jobs logged as `success` in `migration_jobs_status.tsv` will not be re-migrated
-    * To re-run the whole migration process, remove `migration_jobs_status.tsv`
+    * To re-run the whole migration process, remove `migration_jobs_status.tsv` and start with a fresh database
 ---
 ## Post Migration
 * Add all indexes back

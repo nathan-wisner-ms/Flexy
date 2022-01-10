@@ -1,11 +1,8 @@
 from configparser import ConfigParser
 from datetime import datetime
-from multiprocessing import Condition
 import time
 import urllib.parse
-import psycopg2
 import subprocess
-import sqlalchemy.pool as pool
 import csv
 import logging
 import sys
@@ -14,10 +11,11 @@ logging.basicConfig(
     level=logging.DEBUG,
     format="[%(asctime)s] [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(f'migration_log_{datetime.now().strftime("%Y-%m-%d")}'),
+        logging.FileHandler(f'migration_logs_{datetime.now().strftime("%Y-%m-%d")}'),
         logging.StreamHandler(sys.stdout),
     ],
 )
+
 
 def build_config(config_file):
     migration_config = {}
@@ -34,32 +32,10 @@ def build_config(config_file):
 
 
 def build_connection_string(db_config):
-    return f'host={db_config["host"]} port={db_config["port"]} dbname={db_config["database"]} user={db_config["user"]} password={urllib.parse.quote(db_config["password"])} sslmode={db_config["sslmode"]}'
-
-
-def build_db_connection(db_config):
-    conn = psycopg2.connect(
-        user=db_config["user"],
-        password=db_config["password"],
-        host=db_config["host"],
-        port=db_config["port"],
-        database=db_config["database"],
-    )
-    return conn
-
-
-def build_db_connection_pool(section, db_config):
-    logging.debug(f'Creating connection pool for {section}: {db_config["host"]}....')
-
-    def get_conn():
-        return build_db_connection(db_config)
-
-    connection_pool = pool.QueuePool(get_conn, max_overflow=50, pool_size=100)
-    if connection_pool:
-        logging.debug(
-            f'Created connection pool for {section}: {db_config["host"]} successfully.'
-        )
-    return connection_pool
+    conn_string = f'postgres://{urllib.parse.quote(db_config["user"])}:{urllib.parse.quote(db_config["password"])}'
+    conn_string += f'@{urllib.parse.quote(db_config["host"])}:{urllib.parse.quote(db_config["port"])}'
+    conn_string += f'/{urllib.parse.quote(db_config["database"])}?sslmode={urllib.parse.quote(db_config["sslmode"])}'
+    return conn_string
 
 
 def spit_out_schema_files(schema_file_name, config_file_name):
@@ -108,8 +84,10 @@ def migrate_schema(config_file_name, create_indexes):
     source_conn_url = build_connection_string(migration_config["source"])
     target_conn_url = build_connection_string(migration_config["target"])
     schema_file_name = f"schema_{config_file_name}.sql"
-    print(f"Get latest schema from source db...")
-    subprocess.call(
+    print(
+        f'Geting latest schema from source db: {migration_config["source"]["host"]}/{migration_config["source"]["database"]}'
+    )
+    subprocess.check_output(
         f'rm -v {schema_file_name};pg_dump --schema-only "{source_conn_url}" > {schema_file_name}',
         shell=True,
     )
@@ -119,7 +97,9 @@ def migrate_schema(config_file_name, create_indexes):
         schema_file_name if create_indexes == "True" else schema_no_indexes_file_name
     )
     print(f"Sync schema with no indexes in target db...")
-    subprocess.call(f'psql "{target_conn_url}" < {sync_schema_file_name}', shell=True)
+    subprocess.check_output(
+        f'psql "{target_conn_url}" < {sync_schema_file_name}', shell=True
+    )
 
 
 def migrate_roles(config_file_name):
@@ -166,22 +146,16 @@ def parse_table_files(table_file):
     return messages
 
 
-def migrate_pg_dump_restore(
-    thread, table, source_conn_url, target_conn_url, target_connection_pool
-):
-    target_conn = target_connection_pool.connect()
+def migrate_pg_dump_restore(thread, table, source_conn_url, target_conn_url):
+    truncate_command = f'psql "{target_conn_url}" -c "TRUNCATE table {table}"'
     logging_thread(f"Truncating target table: {table} ... ", thread)
-    target_conn.cursor().execute(f"TRUNCATE table {table};")
-    target_conn.commit()
+    subprocess.check_output(truncate_command, shell=True)
     dump_restore_command = f'pg_dump -t {table} -Fc --compress=0 -d "{source_conn_url}" | pg_restore --no-acl --no-owner --data-only -d "{target_conn_url}"'
-    logging_thread(f"Migrating table: {table} ... ", thread)
-    subprocess.call(dump_restore_command, shell=True)
+    logging_thread(f"Running `pg_dump | pg_restore` for table: {table} ... ", thread)
+    subprocess.check_output(dump_restore_command, shell=True)
 
 
-def migrate_copy_by_partition(
-    thread, message, source_conn_url, target_conn_url, connection_pool
-):
-    target_conn = connection_pool.connect()
+def migrate_copy_by_partition(thread, message, source_conn_url, target_conn_url):
     condition_string = ""
     table, column, type, value = message.split("|")
     if "V" == type:
@@ -194,20 +168,22 @@ def migrate_copy_by_partition(
             condition_string = (
                 f"{column} >= '{interval_0}' AND {column} < '{interval_1}'"
             )
+    delete_command = (
+        f'psql "{target_conn_url}" -c "DELETE FROM {table} WHERE {condition_string};"'
+    )
+    logging_thread(
+        f"Deleting from target table: {table}, WHERE by: {condition_string} ...",
+        thread,
+    )
+    subprocess.check_output(delete_command, shell=True)
+    logging_thread(
+        f"Copying table: {table}, WHERE: {condition_string} ... ", thread
+    )
     select_query = f"\COPY (SELECT * from {table} WHERE {condition_string}) TO STDOUT;"
     read_query = f'psql "{source_conn_url}" -c "{select_query}"'
     write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'
     copy_command = f"{read_query} | {write_query} >> /dev/null"
-    logging_thread(
-        f"Deleting from target table: {table}, partition by: {condition_string} ...",
-        thread,
-    )
-    target_conn.cursor().execute(f"DELETE FROM {table} WHERE {condition_string};")
-    target_conn.commit()
-    logging_thread(
-        f"Copying table: {table}, partition by: {condition_string} ... ", thread
-    )
-    subprocess.call(copy_command, shell=True)
+    subprocess.check_output(copy_command, shell=True)
 
 
 def log_migration_jobs_status(message, status, duration):

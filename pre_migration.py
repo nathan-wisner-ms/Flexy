@@ -1,6 +1,7 @@
 import argparse
 import helper
 import argparse
+import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -11,9 +12,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "-o",
-    "--option",
+    "--function",
     help="Function you want to run for pre-migration",
-    choices=("schema", "roles"),
+    choices=("migrate_schema", "migrate_roles"),
     required=True
 )
 parser.add_argument(
@@ -26,11 +27,14 @@ parser.add_argument(
 args = parser.parse_args()
 
 def main():
-    if args.option == "schema":
-        helper.migrate_schema(args.config_file, args.indexes)
-    if args.option == "roles":
-        helper.migrate_roles(args.config_file)
-    print("======= Pre-Migration Steps Done! =========")
+    try:
+        if args.function == "migrate_schema":
+            helper.migrate_schema(args.config_file, args.indexes)
+        if args.function == "migrate_roles":
+            helper.migrate_roles(args.config_file)
+        print(f"=============== Pre-Migration for {args.function} Done! ===========")
+    except subprocess.CalledProcessError as e:
+        print(e)
 
 if __name__ == "__main__":
     main()

@@ -7,14 +7,21 @@ import csv
 import logging
 import sys
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="[%(asctime)s] [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(f'migration_logs_{datetime.now().strftime("%Y-%m-%d")}'),
-        logging.StreamHandler(sys.stdout),
-    ],
-)
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="[%(asctime)s] [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(
+                f'migration_logs_{datetime.now().strftime("%Y-%m-%d")}'
+            ),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+
+
+setup_logging()
 
 
 def build_config(config_file):
@@ -116,12 +123,16 @@ def logging_thread(statement, thread):
 
 
 def get_duration(start_time):
-    return time.strftime("%H:%M:%S:", time.gmtime(time.time() - start_time))
+    duration = time.time() - start_time
+    return time.strftime(
+        f'%H:%M:%S.{str(duration).split(".")[1][:3]}', time.gmtime(duration)
+    )
 
 
-def parse_table_files(table_file):
-    messages = []
-    message_set = set()
+def build_migration_jobs(table_file):
+    jobs_request = []
+    jobs_tables_request_set = set()
+    # validate file
     with open(table_file, "r") as f:
         lines = list(f.read().splitlines())
         for line in lines:
@@ -132,30 +143,88 @@ def parse_table_files(table_file):
                 # schema.tablename|columnname|I|range1,range2
                 # schema.tablename|columnname|I|range1,
                 # schema.tablename|columnname|V|value
-                if line in message_set:
-                    logging.warning(f"Duplicated table parition by range: {line}")
-                    return
-                message_set.add(line.split("|")[0])
+                if line in jobs_tables_request_set:
+                    logging.warning(f"Duplicated table parition: {line}")
+                    return []
+                jobs_tables_request_set.add(line.split("|")[0])
             else:
-                if line in message_set:
-                    logging.warning(f"Duplicated table: {line}", "ERROR")
-                    return
-            message_set.add(line)
-            messages.append(line)
+                if line in jobs_tables_request_set:
+                    logging.warning(
+                        f"Duplicated table: {line}, conflict with partitioned migration jobs",
+                        "ERROR",
+                    )
+                    return []
+            jobs_tables_request_set.add(line)
+            jobs_request.append(line)
     f.close()
-    return messages
+
+    # filter out already succeed
+    jobs_already_success = set()
+    try:
+        f = open("migration_jobs_status.tsv", "r")
+        rows = list(csv.DictReader(f, delimiter="\t"))
+        for row in rows:
+            if row["status"] == "success":
+                jobs_already_success.add(row["migration_job"])
+        f.close()
+    except Exception as error:
+        logging.warning(error)
+        f = open("migration_jobs_status.tsv", "a+")
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(["migration_job", "status", "logged_at", "duration"])
+        f.close()
+
+    migration_jobs_pending = []
+    for job in jobs_request:
+        if job in jobs_already_success:
+            logging.debug(f"Skip migration job: {job} - already succeed.")
+        else:
+            migration_jobs_pending.append(job)
+            logging.debug(f"Queue up migration job: {job}")
+    return migration_jobs_pending
 
 
-def migrate_pg_dump_restore(thread, table, source_conn_url, target_conn_url):
+def execute_migration_job(thread, message, migration_config):
+    for i in range(1, 4):
+        start_time = time.time()
+        try:
+            log_migration_jobs_status(message, "started", None)
+            if "|" in message:
+                migrate_copy_by_partition(thread, message, migration_config)
+            else:
+                migrate_pg_dump_restore(thread, message, migration_config)
+            duration = get_duration(start_time)
+            log_migration_jobs_status(message, "success", duration)
+            logging_thread(
+                f"Sent data for table: {message}, time took: {duration}.",
+                thread,
+            )
+            break
+        except subprocess.CalledProcessError as err:
+            logging.error(err)
+            duration = get_duration(start_time)
+            log_migration_jobs_status(message, "failure", duration)
+            logging_thread(
+                f"Sleep 30 seconds for attempt {i+1} for {message} ...", thread
+            )
+            time.sleep(30)
+
+
+def migrate_pg_dump_restore(thread, table, migration_config):
+    source_conn_url = build_connection_string(migration_config["source"])
+    target_conn_url = build_connection_string(migration_config["target"])
     truncate_command = f'psql "{target_conn_url}" -c "TRUNCATE table {table}"'
     logging_thread(f"Truncating target table: {table} ... ", thread)
     subprocess.check_output(truncate_command, shell=True)
     dump_restore_command = f'pg_dump -t {table} -Fc --compress=0 -d "{source_conn_url}" | pg_restore --no-acl --no-owner --data-only -d "{target_conn_url}"'
-    logging_thread(f"Running `pg_dump | pg_restore` for table: {table} ... ", thread)
+    logging_thread(f"Running 'pg_dump | pg_restore' for table: {table} ... ", thread)
     subprocess.check_output(dump_restore_command, shell=True)
 
 
-def migrate_copy_by_partition(thread, message, source_conn_url, target_conn_url):
+def migrate_copy_by_partition(thread, message, migration_config):
+    source_conn_url = build_connection_string(migration_config["source"])
+    target_conn_url = build_connection_string(migration_config["target"])
+
     condition_string = ""
     table, column, type, value = message.split("|")
     if "V" == type:
@@ -176,9 +245,7 @@ def migrate_copy_by_partition(thread, message, source_conn_url, target_conn_url)
         thread,
     )
     subprocess.check_output(delete_command, shell=True)
-    logging_thread(
-        f"Copying table: {table}, WHERE: {condition_string} ... ", thread
-    )
+    logging_thread(f"Copying table: {table}, WHERE: {condition_string} ... ", thread)
     select_query = f"\COPY (SELECT * from {table} WHERE {condition_string}) TO STDOUT;"
     read_query = f'psql "{source_conn_url}" -c "{select_query}"'
     write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'

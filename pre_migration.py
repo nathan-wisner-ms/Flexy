@@ -1,5 +1,5 @@
 import argparse
-import helper
+import flexy_helper as helper
 import argparse
 import subprocess
 
@@ -11,7 +11,7 @@ parser.add_argument(
     required=True,
 )
 parser.add_argument(
-    "-o",
+    "-f",
     "--function",
     help="Function you want to run for pre-migration",
     choices=("migrate_schema", "migrate_roles"),

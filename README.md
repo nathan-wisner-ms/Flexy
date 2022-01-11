@@ -68,6 +68,13 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * In target server: Turn `autovaccum` off
     * In target & source servers: Increase `max_parallel_workers_per_gather`
     * In target & source servers: Scale up vCores
+
+
+| :warning: WARNING          |
+|:---------------------------|
+| Schemas and Tables must be created in target database before starting migration   |
+
+
 ## Migration
 * Migrate tables in Parallel
     ```

@@ -30,9 +30,9 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         | line in file | translation in program |
         | -----------  |----------- |
         |`schemaname.tablename` |`SELECT * FROM schemaname.tablename`
-        |`schema.tablename\|columnname\|I\|interval_0,interval_1`|`SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0' AND columnname < 'interval_1'` <br>[inclusive lower bound, exclusive upper bound)|
-        |`schema.tablename\|columnname\|I\|interval_0,`| `SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0'` <br> [inclusive lower bound, no upper bound)|
-        |`schema.tablename\|columnname\|V\|value`| `SELECT * FROM schemaname.tablename WHERE columnname = 'value'`|
+        |`schemaname.tablename\|columnname\|I\|interval_0,interval_1`|`SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0' AND columnname < 'interval_1'` <br>[inclusive lower bound, exclusive upper bound)|
+        |`schemaname.tablename\|columnname\|I\|interval_0,`| `SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0'` <br> [inclusive lower bound, no upper bound)|
+        |`schemaname.tablename\|columnname\|V\|value`| `SELECT * FROM schemaname.tablename WHERE columnname = 'value'`|
     * Example file:
          ```
          public.orders
@@ -57,9 +57,11 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         );
         SELECT pg_size_pretty(pg_relation_size('subset1'));
         ```` 
-        You should add the indexes in target db for the watermak column.
+        You should add the indexes in target db for the watermark column.
 
-        Currently, you should be responsible for the validation of partion values, make sure the sets not overlap.
+        Currently, you should be responsible for the validation of partition values, make sure the sets not overlap.
+        
+        
 4. Disable triggers and foreign keys validation
     * In target server: Change server parameter `session_replication_role` TO `REPLICA` in global server level
 5. Optional performance tuning:

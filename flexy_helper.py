@@ -6,6 +6,7 @@ import subprocess
 import csv
 import logging
 import sys
+import re
 
 
 def setup_logging():
@@ -14,7 +15,7 @@ def setup_logging():
         format="[%(asctime)s] [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(
-                f'migration_logs_{datetime.now().strftime("%Y-%m-%d")}'
+                f'migration_logs_{datetime.now().strftime("%Y_%m_%d_%H_%M")}'
             ),
             logging.StreamHandler(sys.stdout),
         ],
@@ -94,8 +95,9 @@ def migrate_schema(config_file_name, create_indexes):
     print(
         f'Geting latest schema from source db: {migration_config["source"]["host"]}/{migration_config["source"]["database"]}'
     )
-    subprocess.check_output(
+    subprocess.call(
         f'rm -v {schema_file_name};pg_dump --schema-only "{source_conn_url}" > {schema_file_name}',
+        stdout=True,
         shell=True,
     )
     spit_out_schema_files(schema_file_name, config_file_name)
@@ -104,8 +106,10 @@ def migrate_schema(config_file_name, create_indexes):
         schema_file_name if create_indexes == "True" else schema_no_indexes_file_name
     )
     print(f"Sync schema with no indexes in target db...")
-    subprocess.check_output(
-        f'psql "{target_conn_url}" < {sync_schema_file_name}', shell=True
+    subprocess.call(
+        f'psql "{target_conn_url}" < {sync_schema_file_name}', 
+        stdout=True,
+        shell=True,
     )
 
 
@@ -137,7 +141,9 @@ def build_migration_jobs(table_file):
         lines = list(f.read().splitlines())
         for line in lines:
             line = line.strip()
-            if "|" in line:
+            if not line:
+                continue
+            elif "|" in line:
                 # TODO: validate line format:
                 # schema.tablename
                 # schema.tablename|columnname|I|range1,range2
@@ -189,10 +195,7 @@ def execute_migration_job(thread, message, migration_config):
         start_time = time.time()
         try:
             log_migration_jobs_status(message, "started", None)
-            if "|" in message:
-                migrate_copy_by_partition(thread, message, migration_config)
-            else:
-                migrate_pg_dump_restore(thread, message, migration_config)
+            migrate_copy_table(thread, message, migration_config)
             duration = get_duration(start_time)
             log_migration_jobs_status(message, "success", duration)
             logging_thread(
@@ -201,52 +204,42 @@ def execute_migration_job(thread, message, migration_config):
             )
             break
         except subprocess.CalledProcessError as err:
+            ## TODO: mask password
             logging.error(err)
             duration = get_duration(start_time)
             log_migration_jobs_status(message, "failure", duration)
             logging_thread(
-                f"Sleep 30 seconds for attempt {i+1} for {message} ...", thread
+                f"Sleep 30 seconds for attempt {i} for {message} ...", thread
             )
             time.sleep(30)
 
-
-def migrate_pg_dump_restore(thread, table, migration_config):
+def migrate_copy_table(thread, message, migration_config):
     source_conn_url = build_connection_string(migration_config["source"])
     target_conn_url = build_connection_string(migration_config["target"])
-    truncate_command = f'psql "{target_conn_url}" -c "TRUNCATE table {table}"'
-    logging_thread(f"Truncating target table: {table} ... ", thread)
-    subprocess.check_output(truncate_command, shell=True)
-    dump_restore_command = f'pg_dump -t {table} -Fc --compress=0 -d "{source_conn_url}" | pg_restore --no-acl --no-owner --data-only -d "{target_conn_url}"'
-    logging_thread(f"Running 'pg_dump | pg_restore' for table: {table} ... ", thread)
-    subprocess.check_output(dump_restore_command, shell=True)
-
-
-def migrate_copy_by_partition(thread, message, migration_config):
-    source_conn_url = build_connection_string(migration_config["source"])
-    target_conn_url = build_connection_string(migration_config["target"])
-
     condition_string = ""
-    table, column, type, value = message.split("|")
-    if "V" == type:
-        condition_string = f"{column} = '{value}'"
-    elif "I" == type:
-        interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
-        if interval_1 == "":
-            condition_string = f"{column} >= '{interval_0}'"
-        else:
-            condition_string = (
-                f"{column} >= '{interval_0}' AND {column} < '{interval_1}'"
-            )
-    delete_command = (
-        f'psql "{target_conn_url}" -c "DELETE FROM {table} WHERE {condition_string};"'
-    )
+    table = message
+    if "|"  in message:
+        table, column, type, value = message.split("|")
+        if "V" == type:
+            condition_string = f"WHERE {column} = '{value}'"
+        elif "I" == type:
+            interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
+            if interval_1 == "":
+                condition_string = f"WHERE {column} >= '{interval_0}'"
+            else:
+                condition_string = (
+                    f"WHERE {column} >= '{interval_0}' AND {column} < '{interval_1}'"
+                )
+    cleanup_method = "DELETE FROM" if condition_string else "TRUNCATE"
+    cleanup_command = f'psql "{target_conn_url}" -c "{cleanup_method} {table} {condition_string};"'
+
     logging_thread(
-        f"Deleting from target table: {table}, WHERE by: {condition_string} ...",
+        f'{cleanup_method} target table: {table} {condition_string} ...',
         thread,
     )
-    subprocess.check_output(delete_command, shell=True)
-    logging_thread(f"Copying table: {table}, WHERE: {condition_string} ... ", thread)
-    select_query = f"\COPY (SELECT * from {table} WHERE {condition_string}) TO STDOUT;"
+    subprocess.check_output(cleanup_command, shell=True)
+    logging_thread(f"Copying table: {table} {condition_string} ... ", thread)
+    select_query = f"\COPY (SELECT * from {table} {condition_string}) TO STDOUT;"
     read_query = f'psql "{source_conn_url}" -c "{select_query}"'
     write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'
     copy_command = f"{read_query} | {write_query} >> /dev/null"
@@ -258,3 +251,7 @@ def log_migration_jobs_status(message, status, duration):
     writer = csv.writer(f, delimiter="\t")
     writer.writerow([message, status, datetime.now(), duration])
     f.close()
+
+def mask_password(message):
+    mesages = message.split()
+    pattern = r'*."postgres://[\w+]%40[\w+]:@[\w+]:[\d+]/[\w+]?sslmode=[\w+]"'

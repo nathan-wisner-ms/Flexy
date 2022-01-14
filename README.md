@@ -85,11 +85,10 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * *Flags:*
         * required: `--config-file` (`-c`), `--queue-file`(`-q`)
         * optional: `--number-thread` (`-n`) (default: `20`)
-    * **Note:**
-        * For large data migration, you should run from `screen` session or in background, to prevent session timeout that will kill the process
-        * When the program completes sending data over network, it still requires small amount of time for target db server to finish writing to disk. Since each (chunk) table is committed in one transaction, if query `SELECT * FROM tablename {WHERE ..} LIMIT 1;` can return any result for the (chunk) table, it means this migration job is finally completed. You can also validate by row count.
     * Tracking job status
         * The status of each migration job will be appended to local file `migration_jobs_status.tsv`.
+    * Validation
+        * TODO
     * Re-Run
         * Any migration jobs logged as `success` in `migration_jobs_status.tsv` will not be re-migrated
         * To re-run the whole migration process, remove `migration_jobs_status.tsv` and start with a fresh database

@@ -1,5 +1,6 @@
 from configparser import ConfigParser
 from datetime import datetime
+from os import strerror
 import time
 import urllib.parse
 import subprocess
@@ -93,22 +94,26 @@ def migrate_schema(config_file_name, create_indexes):
     target_conn_url = build_connection_string(migration_config["target"])
     schema_file_name = f"schema_{config_file_name}.sql"
     print(
-        f'Geting latest schema from source db: {migration_config["source"]["host"]}/{migration_config["source"]["database"]}'
+        f'Geting latest schema from source db: {mask_credentail(source_conn_url)}'
     )
-    subprocess.call(
-        f'rm -v {schema_file_name};pg_dump --schema-only "{source_conn_url}" > {schema_file_name}',
+    exit_code = subprocess.call(
+        f'rm -v {schema_file_name};pg_dump --schema-only --no-privileges --no-owner "{source_conn_url}" > {schema_file_name}',
         stdout=True,
+        stderr=True,
         shell=True,
     )
+    if 0 != exit_code:
+        return exit_code
     spit_out_schema_files(schema_file_name, config_file_name)
     schema_no_indexes_file_name = f"schema_no_indexes_{config_file_name}.sql"
     sync_schema_file_name = (
         schema_file_name if create_indexes == "True" else schema_no_indexes_file_name
     )
     print(f"Sync schema with no indexes in target db...")
-    subprocess.call(
+    return subprocess.call(
         f'psql "{target_conn_url}" < {sync_schema_file_name}', 
         stdout=True,
+        stderr=True,
         shell=True,
     )
 
@@ -175,6 +180,7 @@ def build_migration_jobs(table_file):
         f.close()
     except Exception as error:
         logging.warning(error)
+        logging.info("Generating new file: migration_jobs_status.tsv")
         f = open("migration_jobs_status.tsv", "a+")
         writer = csv.writer(f, delimiter="\t")
         writer.writerow(["migration_job", "status", "logged_at", "duration"])
@@ -195,23 +201,36 @@ def execute_migration_job(thread, message, migration_config):
         start_time = time.time()
         try:
             log_migration_jobs_status(message, "started", None)
-            migrate_copy_table(thread, message, migration_config)
-            duration = get_duration(start_time)
-            log_migration_jobs_status(message, "success", duration)
-            logging_thread(
-                f"Sent data for table: {message}, time took: {duration}.",
-                thread,
+            exit_code = migrate_copy_table(thread, message, migration_config)
+            if 0 == exit_code:
+                duration = get_duration(start_time)
+                log_migration_jobs_status(message, "success", duration)
+                logging_thread(
+                    f"Sent data for table: {message}, time took: {duration}.",
+                    thread,
+                )
+                break
+            else:
+                log_migration_jobs_status(message, "failure", None)
+                logging_thread(f"Sleep 30 seconds for attempt {i} for {message} ...", thread)
+                time.sleep(30)
+        except Exception as err:
+            if "does not exist" in str(err):
+                logging.warning(f"Skip retry: {mask_credentail(err)}.")
+                break
+
+def build_query_condition(column, type, value):
+    if "V" == type:
+        condition_string = f"WHERE {column} = '{value}'"
+    elif "I" == type:
+        interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
+        if interval_1 == "":
+            condition_string = f"WHERE {column} >= '{interval_0}'"
+        else:
+            condition_string = (
+                f"WHERE {column} >= '{interval_0}' AND {column} < '{interval_1}'"
             )
-            break
-        except subprocess.CalledProcessError as err:
-            ## TODO: mask password
-            logging.error(err)
-            duration = get_duration(start_time)
-            log_migration_jobs_status(message, "failure", duration)
-            logging_thread(
-                f"Sleep 30 seconds for attempt {i} for {message} ...", thread
-            )
-            time.sleep(30)
+    return condition_string
 
 def migrate_copy_table(thread, message, migration_config):
     source_conn_url = build_connection_string(migration_config["source"])
@@ -220,16 +239,7 @@ def migrate_copy_table(thread, message, migration_config):
     table = message
     if "|"  in message:
         table, column, type, value = message.split("|")
-        if "V" == type:
-            condition_string = f"WHERE {column} = '{value}'"
-        elif "I" == type:
-            interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
-            if interval_1 == "":
-                condition_string = f"WHERE {column} >= '{interval_0}'"
-            else:
-                condition_string = (
-                    f"WHERE {column} >= '{interval_0}' AND {column} < '{interval_1}'"
-                )
+        condition_string = build_query_condition(column, type, value)
     cleanup_method = "DELETE FROM" if condition_string else "TRUNCATE"
     cleanup_command = f'psql "{target_conn_url}" -c "{cleanup_method} {table} {condition_string};"'
 
@@ -237,13 +247,28 @@ def migrate_copy_table(thread, message, migration_config):
         f'{cleanup_method} target table: {table} {condition_string} ...',
         thread,
     )
-    subprocess.check_output(cleanup_command, shell=True)
+    p0 = subprocess.Popen(cleanup_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    p0.wait()
+    stdout0, stderr0 = p0.communicate()
+    if 0 != p0.returncode:
+        error_message  = stderr0.decode("utf-8")
+        logging.error(f"Failed to {cleanup_method} for table: {table}, error: {mask_credentail(error_message)}")
+        if "does not exist" in error_message:
+            raise Exception(f"table {table} does not exist")
+        return p0.returncode
+
     logging_thread(f"Copying table: {table} {condition_string} ... ", thread)
     select_query = f"\COPY (SELECT * from {table} {condition_string}) TO STDOUT;"
     read_query = f'psql "{source_conn_url}" -c "{select_query}"'
     write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'
-    copy_command = f"{read_query} | {write_query} >> /dev/null"
-    subprocess.check_output(copy_command, shell=True)
+    copy_command = f"{read_query} | {write_query}"
+    p1 = subprocess.Popen(copy_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    p1.wait()
+    stdout1, stderr1 = p0.communicate()
+    if 0 != p1.returncode:
+        logging.error(f"Failed to copy for table: {table}, error: {mask_credentail(stderr1)}")
+    return p1.returncode 
+
 
 
 def log_migration_jobs_status(message, status, duration):
@@ -252,6 +277,6 @@ def log_migration_jobs_status(message, status, duration):
     writer.writerow([message, status, datetime.now(), duration])
     f.close()
 
-def mask_password(message):
-    mesages = message.split()
-    pattern = r'*."postgres://[\w+]%40[\w+]:@[\w+]:[\d+]/[\w+]?sslmode=[\w+]"'
+def mask_credentail(message):
+    messages = str(message).split()
+    return " ".join([re.sub(r'postgres://.*@', 'postgres://<USERNAME>:<PASSWORD>@', m) for m in messages])

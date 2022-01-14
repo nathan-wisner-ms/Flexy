@@ -27,14 +27,23 @@ parser.add_argument(
 args = parser.parse_args()
 
 def main():
+    exit_code = None
     try:
         if args.function == "migrate_schema":
-            helper.migrate_schema(args.config_file, args.indexes)
+            exit_code = helper.migrate_schema(args.config_file, args.indexes)
         if args.function == "migrate_roles":
-            helper.migrate_roles(args.config_file)
-        print(f"=============== Pre-Migration for {args.function} Done! ===========")
+            exit_code = helper.migrate_roles(args.config_file)
     except subprocess.CalledProcessError as e:
-        print(e)
+        print(helper.mask_credentail(e))
+        raise Exception("Faile to complete {args.function}")
+    if 0 != exit_code:
+        print(f"Failed to complete {args.function}")
+    else:
+        print(f"=============== Pre-Migration: {args.function} Done! ===========")
 
 if __name__ == "__main__":
     main()
+
+
+
+

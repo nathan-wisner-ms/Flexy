@@ -41,7 +41,7 @@ def execute_tasks(thread):
         message = tasks_queue.get()
         num_thread_jobs += 1
         flexy_helper.logging_thread(
-            f"Pick up migration job: {message}",
+            f"Pick up migration job {num_thread_jobs}: {message}",
             thread,
         )
         flexy_helper.execute_migration_job(thread, message, MIGRATION_CONFIG)
@@ -77,6 +77,7 @@ def main():
         for i in range(min(args.number_thread, total_jobs))
     ]
     for p in procs:
+        time.sleep(1)
         p.start()
     for p in procs:
         p.join()

@@ -36,8 +36,8 @@ def execute_tasks(thread):
     global project_id
 
     num_thread_jobs = 0
+    thread_start_time = time.time()
     while not tasks_queue.empty():
-        thread_start_time = time.time()
         message = tasks_queue.get()
         num_thread_jobs += 1
         flexy_helper.logging_thread(
@@ -77,7 +77,7 @@ def main():
         for i in range(min(args.number_thread, total_jobs))
     ]
     for p in procs:
-        time.sleep(1)
+        time.sleep(0.5)
         p.start()
     for p in procs:
         p.join()

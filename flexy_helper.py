@@ -151,6 +151,7 @@ def build_migration_jobs(table_file):
             elif "|" in line:
                 # TODO: validate line format:
                 # schema.tablename
+                # schema.tablename|columnname|I|,range1
                 # schema.tablename|columnname|I|range1,range2
                 # schema.tablename|columnname|I|range1,
                 # schema.tablename|columnname|V|value
@@ -221,10 +222,15 @@ def execute_migration_job(thread, message, migration_config):
 
 def build_query_condition(column, type, value):
     if "V" == type:
-        condition_string = f"WHERE {column} = '{value}'"
+        if "NULL" == value:
+            condition_string = f"WHERE {column} IS NULL"
+        else:
+            condition_string = f"WHERE {column} = '{value}'"
     elif "I" == type:
         interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
-        if interval_1 == "":
+        if interval_0 == "":
+            condition_string = f"WHERE {column} < '{interval_0}'"
+        elif interval_1 == "":
             condition_string = f"WHERE {column} >= '{interval_0}'"
         else:
             condition_string = (

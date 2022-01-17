@@ -29,10 +29,12 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * Four different string formats are accepted in each line <br>
         | line in file | translation in program |
         | -----------  |----------- |
-        |`schemaname.tablename` |`SELECT * FROM schemaname.tablename`
+        |`schemaname.tablename` |`SELECT * FROM schemaname.tablename`|
+        |`schemaname.tablename\|columnname\|I\|,interval_0`|`SELECT * FROM schemaname.tablename WHERE columnname < 'interval_1'` <br>(no lower bound, exclusive upper bound)|
         |`schemaname.tablename\|columnname\|I\|interval_0,interval_1`|`SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0' AND columnname < 'interval_1'` <br>[inclusive lower bound, exclusive upper bound)|
         |`schemaname.tablename\|columnname\|I\|interval_0,`| `SELECT * FROM schemaname.tablename WHERE columnname >= 'interval_0'` <br> [inclusive lower bound, no upper bound)|
         |`schemaname.tablename\|columnname\|V\|value`| `SELECT * FROM schemaname.tablename WHERE columnname = 'value'`|
+        |`schemaname.tablename\|columnname\|V\|NULL`| `SELECT * FROM schemaname.tablename WHERE columnname IS NULL`|
     * Example file:
          ```
          public.orders

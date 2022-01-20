@@ -43,7 +43,9 @@ def build_config(config_file):
 def build_connection_string(db_config):
     conn_string = f'postgres://{urllib.parse.quote(db_config["user"])}:{urllib.parse.quote(db_config["password"])}'
     conn_string += f'@{urllib.parse.quote(db_config["host"])}:{urllib.parse.quote(db_config["port"])}'
-    conn_string += f'/{urllib.parse.quote(db_config["database"])}?sslmode={urllib.parse.quote(db_config["sslmode"])}'
+    conn_string += f'/{urllib.parse.quote(db_config["database"])}'
+    if db_config["sslmode"].strip():
+        conn_string += f'?sslmode={urllib.parse.quote(db_config["sslmode"])}'
     return conn_string
 
 

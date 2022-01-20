@@ -258,7 +258,7 @@ def migrate_copy_table(thread, message, migration_config):
     stdout0, stderr0 = p0.communicate()
     if 0 != p0.returncode:
         error_message  = stderr0.decode("utf-8")
-        logging.error(f"Failed to {cleanup_method} for table: {table}, error: {mask_credentail(error_message)}")
+        logging.error(f"Failed to {cleanup_method} for table: {table}, error: {mask_credentail(error_message)}, output: {stdout0}")
         if "does not exist" in error_message:
             raise Exception(f"table {table} does not exist")
         return p0.returncode
@@ -270,9 +270,9 @@ def migrate_copy_table(thread, message, migration_config):
     copy_command = f"{read_query} | {write_query}"
     p1 = subprocess.Popen(copy_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     p1.wait()
-    stdout1, stderr1 = p0.communicate()
+    stdout1, stderr1 = p1.communicate()
     if 0 != p1.returncode:
-        logging.error(f"Failed to copy for table: {table}, error: {mask_credentail(stderr1)}")
+        logging.error(f"Failed to copy for table: {table}, error: {mask_credentail(stderr1)}, output: {stdout1}")
     return p1.returncode 
 
 

@@ -1,5 +1,5 @@
 from configparser import ConfigParser
-from datetime import datetime
+from datetime import datetime, timedelta
 from os import strerror
 import time
 import urllib.parse
@@ -8,12 +8,14 @@ import csv
 import logging
 import sys
 import re
+import psycopg2
+import math
 
 
 def setup_logging():
     logging.basicConfig(
         level=logging.DEBUG,
-        format="[%(asctime)s] [%(levelname)s] %(message)s",
+        format="[%(asctime)s][%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(
                 f'migration_logs_{datetime.now().strftime("%Y_%m_%d_%H_%M")}'
@@ -23,16 +25,14 @@ def setup_logging():
     )
 
 
-setup_logging()
-
-
 def build_config(config_file):
     migration_config = {}
     parser = ConfigParser()
     parser.read(config_file)
-    for section in ["source", "target"]:
+    for section in ["source", "target", "azure", "local"]:
         if not parser.has_section(section):
-            raise Exception(f"Section {section} not found in the file: {config_file}")
+            raise Exception(
+                f"Section {section} not found in the file: {config_file}")
         migration_config[section] = {}
         params = parser.items(section)
         for param in params:
@@ -47,6 +47,29 @@ def build_connection_string(db_config):
     if db_config["sslmode"].strip():
         conn_string += f'?sslmode={urllib.parse.quote(db_config["sslmode"])}'
     return conn_string
+
+
+def build_db_connection(db_config):
+    db_conn = psycopg2.connect(
+        database=db_config["database"], user=db_config["user"], password=db_config[
+            "password"], host=db_config["host"], port=db_config["port"]
+    )
+    return db_conn
+
+
+def verify_db_connections(migration_config):
+    for section in ["source", "target"]:
+        db_config = migration_config[section]
+        db_conn_string = build_connection_string(db_config)
+        print(
+            f"Verifying connection to {section} db: {mask_credentail(db_conn_string)}")
+        process = subprocess.Popen(
+            f'psql "{db_conn_string}" -c "SELECT version() AS {section}_db_version;"', stdout=True, stderr=True, shell=True)
+        process.communicate()
+        if 0 != process.returncode:
+            print(f"Failed to connect to {section} db: {db_conn_string}")
+            return False
+    return True
 
 
 def spit_out_schema_files(schema_file_name, config_file_name):
@@ -69,7 +92,7 @@ def spit_out_schema_files(schema_file_name, config_file_name):
     for query in queries:
         is_index_query = False
         for line in query:
-            if "CREATE INDEX" in line:
+            if "CREATE INDEX" in line or "CREATE UNIQUE INDEX" in line:
                 is_index_query = True
                 queries_index.append(query)
                 break
@@ -113,7 +136,7 @@ def migrate_schema(config_file_name, create_indexes):
     )
     print(f"Sync schema with no indexes in target db...")
     return subprocess.call(
-        f'psql "{target_conn_url}" < {sync_schema_file_name}', 
+        f'psql "{target_conn_url}" < {sync_schema_file_name}',
         stdout=True,
         stderr=True,
         shell=True,
@@ -125,9 +148,127 @@ def migrate_roles(config_file_name):
     print("This feature is to be implemented. ")
 
 
+def create_list_of_tables(config_file, source_db_config):
+    source_db_conn = build_db_connection(source_db_config)
+    query_tables_order_by_size = """
+     SELECT schemaname||'.'||relname as schema_table, pg_size_pretty(pg_relation_size(relid)) AS data_size
+ FROM pg_catalog.pg_statio_user_tables
+ ORDER BY pg_relation_size(relid) DESC;
+    """
+    print("Fetching list of tables from source db order by data size ...")
+    source_cursor = source_db_conn.cursor()
+    source_cursor.execute(query_tables_order_by_size)
+    rows = source_cursor.fetchall()
+    filename1, filename2 = f"tables_{config_file}", f"tables_size_{config_file}.tsv"
+    print(f"Writing data to files: {filename1}, {filename2}")
+    f1 = open(filename1, "w+")
+    f2 = open(filename2, "w+")
+    writer2 = csv.writer(f2, delimiter="\t")
+    writer2.writerow(["schema_table", "data_size"])
+    for row in rows:
+        f1.write(f"{row[0]}\n")
+        writer2.writerow(row)
+    f1.close()
+    f2.close()
+    return 0
+
+
+def create_table_parts(migration_config, tables_file):
+    infile = open(tables_file)
+    lines = infile.read().splitlines()
+    infile.close()
+    partitions = []
+    source_db_config = migration_config["source"]
+    source_db_conn = build_db_connection(source_db_config)
+    for line in lines:
+        if not line.strip() or not "|" in line:
+            continue
+        values = line.split("|")
+        schema_table, columnname = values[0], values[1]
+        source_cursor = source_db_conn.cursor()
+        print(f"Fetching information for {schema_table}:{columnname} ...")
+        source_cursor.execute(f"""
+        SELECT data_type, is_nullable from information_schema.columns 
+        WHERE table_schema||'.'||table_name = '{schema_table}' AND column_name = '{columnname}';
+        """)
+        result = source_cursor.fetchone()
+        if not result:
+            print(
+                "Failed to find information: {schema_name} OR {column_name} does not exit.")
+            continue
+        data_type, is_nullable = result[0], result[1]
+        type_code = None
+        if data_type in ["smallint", "integer", "bigint", "smallserial", "serial", "bigserial"]:
+            type_code = 1
+        elif "timestamp" in data_type:
+            type_code = 2
+        else:
+            print(
+                f"Unable to create parts for {schema_table} based on the column {columnname}, datatype: {data_type}")
+            continue
+
+        print(f"Fetching data size for {schema_table} ...")
+        source_cursor.execute(f"""
+        SELECT pg_size_pretty(pg_relation_size('{schema_table}'));
+        """)
+        table_size_string = source_cursor.fetchone()[0]
+        table_size_gb = int(table_size_string.split()[0])
+        chunk_size_gb = int(migration_config["local"]["chunk_size_gb"])
+        n_parts = math.ceil(table_size_gb/chunk_size_gb)
+        print(f"Result: {table_size_string}")
+        if "GB" not in table_size_string or ("GB" in table_size_string and table_size_gb < 20) or n_parts <= 1:
+            print(f"No need to create parts for table {schema_table}.")
+            partitions.append(schema_table)
+            continue
+        print(
+            f"Chunking {schema_table}({table_size_string}) into {len(partitions)} parts for migration ...")
+
+        query_min_max = f"min({columnname}{'::date' if '2' == type else ''}), max({columnname}{'::date' if '2' == type else ''})"
+        print(f"Fetching {query_min_max} for {schema_table} ...")
+        source_cursor.execute(f"SELECT {query_min_max} FROM {schema_table};")
+        min_max_values = source_cursor.fetchone()
+        print(f"Result: {min_max_values}")
+        min_value, max_value = min_max_values[0], min_max_values[1]
+        if 1 == type_code:
+            total_size = max_value - min_value + 1
+            num_step = int(total_size/n_parts)
+            last_num = None
+            for num in range(min_value, max_value, num_step):
+                last_num = num + num_step
+                partitions.append(
+                    f"{schema_table}|{columnname}|I|{num},{last_num}")
+            partitions.append(f"{schema_table}|{columnname}|I|{last_num},")
+        elif 2 == type_code:
+            date_format = "%Y-%m-%d"
+            days_diff = (max_value - min_value).days
+            day_step = int(days_diff/n_parts)
+            curr_date = min_value
+            while (max_value - curr_date).days > day_step:
+                next_date = curr_date + timedelta(days=day_step)
+                partitions.append(
+                    f"{schema_table}|{columnname}|I|{curr_date.strftime(date_format)},{next_date.strftime(date_format)}")
+                curr_date = next_date
+            partitions.append(
+                f"{schema_table}|{columnname}|I|{curr_date.strftime(date_format)},")
+        if is_nullable == "YES":
+            partitions.append(f"{schema_table}|{columnname}|V|NULL")
+
+    if not partitions:
+        return 1
+    out_filename = f"parts_{tables_file}"
+    print(f"Writing to {out_filename} ...\n")
+    outfile = open(out_filename, "w+")
+    for partition in partitions:
+        print(partition)
+        outfile.write(f'{partition}\n')
+    outfile.close()
+    source_db_conn.close()
+    return 0
+
+
 def logging_thread(statement, thread):
     if thread:
-        thread_msg = f"[thread={thread}]"
+        thread_msg = f"(thread={thread})"
     else:
         thread_msg = ""
     logging.debug(f"{thread_msg} {statement}")
@@ -186,7 +327,8 @@ def build_migration_jobs(table_file):
         logging.info("Generating new file: migration_jobs_status.tsv")
         f = open("migration_jobs_status.tsv", "a+")
         writer = csv.writer(f, delimiter="\t")
-        writer.writerow(["migration_job", "status", "logged_at", "duration"])
+        writer.writerow(["migration_job", "status", "logged_at",
+                        "duration", "thread_number", "count"])
         f.close()
 
     migration_jobs_pending = []
@@ -203,24 +345,29 @@ def execute_migration_job(thread, message, migration_config):
     for i in range(1, 4):
         start_time = time.time()
         try:
-            log_migration_jobs_status(message, "started", None)
-            exit_code = migrate_copy_table(thread, message, migration_config)
+            log_migration_jobs_status(thread, message, "started", None, None)
+            exit_code, count = migrate_copy_table(
+                thread, message, migration_config)
             if 0 == exit_code:
                 duration = get_duration(start_time)
-                log_migration_jobs_status(message, "success", duration)
+                log_migration_jobs_status(
+                    thread, message, "success", duration, count)
                 logging_thread(
-                    f"Sent data for table: {message}, time took: {duration}.",
+                    f"Migrated table: {message}, time took: {duration}.",
                     thread,
                 )
                 break
             else:
-                log_migration_jobs_status(message, "failure", None)
-                logging_thread(f"Sleep 30 seconds for attempt {i} for {message} ...", thread)
+                log_migration_jobs_status(
+                    thread, message, "failure", None, None)
+                logging_thread(
+                    f"Sleep 30 seconds for attempt {i} for {message} ...", thread)
                 time.sleep(30)
         except Exception as err:
             if "does not exist" in str(err):
                 logging.warning(f"Skip retry: {mask_credentail(err)}.")
                 break
+
 
 def build_query_condition(column, type, value):
     if "V" == type:
@@ -229,7 +376,8 @@ def build_query_condition(column, type, value):
         else:
             condition_string = f"WHERE {column} = '{value}'"
     elif "I" == type:
-        interval_0, interval_1 = [interval.strip() for interval in value.split(",")]
+        interval_0, interval_1 = [interval.strip()
+                                  for interval in value.split(",")]
         if interval_0 == "":
             condition_string = f"WHERE {column} < '{interval_0}'"
         elif interval_1 == "":
@@ -240,12 +388,14 @@ def build_query_condition(column, type, value):
             )
     return condition_string
 
+
 def migrate_copy_table(thread, message, migration_config):
+    count = None
     source_conn_url = build_connection_string(migration_config["source"])
     target_conn_url = build_connection_string(migration_config["target"])
     condition_string = ""
     table = message
-    if "|"  in message:
+    if "|" in message:
         table, column, type, value = message.split("|")
         condition_string = build_query_condition(column, type, value)
     cleanup_method = "DELETE FROM" if condition_string else "TRUNCATE"
@@ -255,12 +405,16 @@ def migrate_copy_table(thread, message, migration_config):
         f'{cleanup_method} target table: {table} {condition_string} ...',
         thread,
     )
-    p0 = subprocess.Popen(cleanup_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    p0 = subprocess.Popen(
+        cleanup_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     p0.wait()
     stdout0, stderr0 = p0.communicate()
+    logging_thread(
+        f"System output of {cleanup_method} table {table} {condition_string}: {stdout0}", thread)
     if 0 != p0.returncode:
-        error_message  = stderr0.decode("utf-8")
-        logging.error(f"Failed to {cleanup_method} for table: {table}, error: {mask_credentail(error_message)}, output: {stdout0}")
+        error_message = stderr0.decode("utf-8")
+        logging.error(
+            f"Failed to {cleanup_method} for table: {message}, error: {mask_credentail(error_message)}")
         if "does not exist" in error_message:
             raise Exception(f"table {table} does not exist")
         return p0.returncode
@@ -270,20 +424,27 @@ def migrate_copy_table(thread, message, migration_config):
     read_query = f'psql "{source_conn_url}" -c "{select_query}"'
     write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'
     copy_command = f"{read_query} | {write_query}"
-    p1 = subprocess.Popen(copy_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+    p1 = subprocess.Popen(copy_command, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, shell=True)
     p1.wait()
     stdout1, stderr1 = p1.communicate()
+    logging_thread(
+        f"System output of \COPY table: {table} {condition_string}: {stdout1}", thread)
     if 0 != p1.returncode:
-        logging.error(f"Failed to copy for table: {table}, error: {mask_credentail(stderr1)}, output: {stdout1}")
-    return p1.returncode 
+        logging.error(
+            f"Failed to copy for table: {table}, error: {mask_credentail(stderr1.decode('utf-8'))}")
+    else:
+        count = int(stdout1.decode(
+            'utf-8').replace("COPY", "").replace("\n", ""))
+    return p1.returncode, count
 
 
-
-def log_migration_jobs_status(message, status, duration):
+def log_migration_jobs_status(thread, message, status, duration, count):
     f = open(f"migration_jobs_status.tsv", "a+")
     writer = csv.writer(f, delimiter="\t")
-    writer.writerow([message, status, datetime.now(), duration])
+    writer.writerow([message, status, datetime.now(), duration, thread, count])
     f.close()
+
 
 def mask_credentail(message):
     messages = str(message).split()

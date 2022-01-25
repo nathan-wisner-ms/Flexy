@@ -1,10 +1,12 @@
 import time
 from multiprocessing import Process, Queue
 import argparse
+from typing import final
 import flexy_helper
 import argparse
 import logging
 import uuid
+from datetime import datetime
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -18,7 +20,7 @@ parser.add_argument(
     "--number-thread",
     help="number of parallel threads, default: 20",
     type=int,
-    default=20,
+    default=10,
 )
 parser.add_argument(
     "-q", "--queue-file", help="File Path of tables for migration", required=True
@@ -51,8 +53,10 @@ def execute_tasks(thread):
         thread,
     )
 
-
 def main():
+    if not flexy_helper.verify_db_connections(MIGRATION_CONFIG):
+        quit()
+
     global tasks_queue
     global project_id
 
@@ -80,12 +84,13 @@ def main():
         time.sleep(0.5)
         p.start()
     for p in procs:
+        time.sleep(0.5)
         p.join()
 
+    total_duration = flexy_helper.get_duration(start_time)
     logging.info(
-        f"============== End of migration project: {project_id}. Total time took: {flexy_helper.get_duration(start_time)}. ============== "
+        f"============== End of migration project: {project_id}. Total time took: {total_duration}. ============== "
     )
-
 
 if __name__ == "__main__":
     main()

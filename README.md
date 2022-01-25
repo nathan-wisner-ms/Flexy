@@ -2,11 +2,19 @@
 ## Introduction
 A command-line tool for faster PG to PG offline parallel migration. Run from any VM that can use `psql` to connect to migrating db servers.
 ## Set up
-* Download and upload the folder to your VM.<br>
+* In your vm workspace, 
+```
+    git clone https://github.com/ljiang001/Flexy.git\
+```
 * Install the following if not yet installed.
     * python3
-    * postgresql-client   
-* `cd` to the folder  
+    * postgresql-client
+    * pip3
+* `cd` to the folder
+* Install python packages:
+```
+    pip3 intsall -r requirements.txt
+```  
 ### Pre-Migration
 1. Config: Fill source/target db configuration in the `config.ini`. Can copy to any new config file for different migration project but must follow the template.
 2. Migrate Schema (skip if tables already migrated)
@@ -16,8 +24,10 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
      python3 pre_migration.py --config-file=yourconfigfile --function=migrate_schema
      ```
     * *Flags:*
-        * required: `--config-file` (`-c`), `--function` (`-f`)
-        * optional: `--indexes=True`(`-i`) (default: `False`)
+        * required: `--function` (`-f`)(choice: `migrate_schema`, `create_list`, `create_parts`)
+        * optional:
+            * `--config-file`(`-i`) (default: `config.ini`)
+            * `--indexes=True`(`-i`) (default: `False`)
     * This command will generate 3 files:
         * `schema_{config-file-name}.sql`
         * `schema_no_indexes_{config-file-name}.sql`
@@ -25,7 +35,36 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     
         if `--indexes=True`: migrate with indexes
         <br>else: migrate with no indexes
-3. Create a file for selected tables to migrate:
+3. (optional) Create a list of all tables from the source database order by descending data size
+    * Create list:<br>
+     ```
+     python3 pre_migration.py --config-file=yourconfigfile --function=create_list
+     ```
+    * This command will generate 2 files:
+        * `tables_{config-file-name}`
+        * `tables_size_{config-file-name}.tsv`
+    * Query used in the function: 
+    ```
+    SELECT schemaname||'.'||relname as schema_table, pg_size_pretty(pg_relation_size(relid)) AS data_size
+    FROM pg_catalog.pg_statio_user_tables
+    ORDER BY pg_relation_size(relid) DESC;
+     ```
+4. (optional) Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
+    * Create a file containing tables and columns, each line formatted as following:
+    ```
+    schemaname.tablename|columnname
+    ```
+    * Create parts:
+    ```
+    python3 pre_migration.py --config-file=yourconfigfile --function=create_parts --tables-file=yourtablefile
+    ```
+    * This command will generate a file containing a list of migration job string used in the `migrate_parallel.py` function, which divide a large table into multiple migration jobs based on the watermark column and table size.  
+    * Create the index for the column if not yet created in source and target tables 
+    * **Note**: 
+        * strongly recommand for table size large than 100 GB
+        * Recommand for table size large than 50 GB
+        * The function assumes the data are evenly distributed by the id/timestamp. The average size of each chunk will be 10 GB. 
+5. Create a file for selected tables to migrate:
     * Four different string formats are accepted in each line <br>
         | line in file | translation in program |
         | -----------  |----------- |
@@ -43,33 +82,12 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
          public.customers|country|V|US
          ```  
     * **Tips**: <br>
-         To reduce the entire migration duration, you should generate the file sort by data size in descending 
-          orders, to migrate the largest table first. You can generate the list by:
-         ````
-        SELECT schemaname||'.'||relname as schema_table_name, 
-        pg_relation_size(relid) as data_size, pg_size_pretty(pg_relation_size(relid)) as pretty_data_size
-        FROM pg_catalog.pg_statio_user_tables
-        ORDER BY data_size DESC;
-         ````
-
-        To speed up the migration process, it's strongly recommend that you will chunk a large table into multiple migration jobs based on an indexed watermark column (e.g., id, timestemp) or some value that can segment the tables. The recommend size is under 20 GB for each partition. To check the partitioned data size, you query it by:
-        ````
-        CREATE TEMPORARY TABLE subset1 AS (
-            SELECT * FROM table1 WHERE ...
-        );
-        SELECT pg_size_pretty(pg_relation_size('subset1'));
-        ```` 
-        You should add the indexes in target db for the watermark column.
-
-        Currently, you should be responsible for the validation of partition values, make sure the sets not overlap.
-        
-        
+        Put the large partitioned tables together on the top. The rest should sort by descending data size. 
 4. Disable triggers and foreign keys validation
     * In target server: Change server parameter `session_replication_role` TO `REPLICA` in global server level
 5. Optional performance tuning:
     * In target server: Increase `max_wal_size` to largest value
     * In target server: Increase `maintenance_work_mem` to largest value
-    * In target server: Turn `autovaccum` off
     * In target & source servers: Increase `max_parallel_workers_per_gather`
     * In target & source servers: Scale up vCores
 
@@ -85,15 +103,16 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     python3 migrate_parallel.py --config-file=yourconfigfile --queue-file=yourtablesfile
     ````
     * *Flags:*
-        * required: `--config-file` (`-c`), `--queue-file`(`-q`)
-        * optional: `--number-thread` (`-n`) (default: `20`)
+        * required: `--queue-file`(`-q`)
+        * optional:
+            * `--config-file` (`-c`) (default: config.ini) 
+            * `--number-thread` (`-n`) (default: `20`)
+    * In each migration, each table will be truncated or deleted for the partitoned part
     * Tracking job status
         * The status of each migration job will be appended to local file `migration_jobs_status.tsv`.
-    * Validation
-        * TODO
     * Re-Run
         * Any migration jobs logged as `success` in `migration_jobs_status.tsv` will not be re-migrated
-        * To re-run the whole migration process, remove `migration_jobs_status.tsv` and start with a fresh database
+        * To re-run the whole migration process, remove `migration_jobs_status.tsv`
 * Migrate single table
     ```
     python3 migrate_single.py --config-file=yourconfigfile --table=schema.table
@@ -105,8 +124,6 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * Monitor CPUs in your source/target db servers
 * Add indexes during migration
     * To reduce entire migration spanning time, you can add indexes back for tables that already completely migrate while still running migration for other tables
-* Further speed up
-    * Primary keys are automatically indexes, which are not removed from the schema. Drop the primary key constraints in target database can also speed up the data import. but you also need to benchmark how long it will take to add the constraints back after data transfer completes. For very large tables that will be chunked by primary keys, do not drop it. 
 ## Post Migration
 * Add all indexes back
 * Alter sequences restart ids

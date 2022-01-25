@@ -1,3 +1,4 @@
+from cmath import log
 from configparser import ConfigParser
 from datetime import datetime, timedelta
 from os import strerror
@@ -29,7 +30,7 @@ def build_config(config_file):
     migration_config = {}
     parser = ConfigParser()
     parser.read(config_file)
-    for section in ["source", "target", "azure", "local"]:
+    for section in ["source", "target", "local"]:
         if not parser.has_section(section):
             raise Exception(
                 f"Section {section} not found in the file: {config_file}")
@@ -390,7 +391,6 @@ def build_query_condition(column, type, value):
 
 
 def migrate_copy_table(thread, message, migration_config):
-    count = None
     source_conn_url = build_connection_string(migration_config["source"])
     target_conn_url = build_connection_string(migration_config["target"])
     condition_string = ""
@@ -417,7 +417,7 @@ def migrate_copy_table(thread, message, migration_config):
             f"Failed to {cleanup_method} for table: {message}, error: {mask_credentail(error_message)}")
         if "does not exist" in error_message:
             raise Exception(f"table {table} does not exist")
-        return p0.returncode
+        return p0.returncode, None
 
     logging_thread(f"Copying table: {table} {condition_string} ... ", thread)
     select_query = f"\COPY (SELECT * from {table} {condition_string}) TO STDOUT;"
@@ -433,10 +433,24 @@ def migrate_copy_table(thread, message, migration_config):
     if 0 != p1.returncode:
         logging.error(
             f"Failed to copy for table: {table}, error: {mask_credentail(stderr1.decode('utf-8'))}")
+        return p1.returncode, None
+
+    copied_count = int(stdout1.decode(
+        'utf-8').replace("COPY", "").replace("\n", ""))
+    logging_thread(f"Comparing row count from source table: {table} {condition_string} ...", thread)
+    source_conn = build_db_connection(migration_config["source"])
+    source_cursor = source_conn.cursor()
+    source_cursor.execute("""SET max_parallel_workers_per_gather = 30;""")
+    source_conn.commit()
+    source_cursor.execute(f"""SELECT COUNT(1) FROM {table} {condition_string};""")
+    source_count = source_cursor.fetchone()[0]
+    source_conn.close()
+    if source_count == copied_count:
+        logging_thread(f"Row count matched for copied: {table} {condition_string}", thread)
+        return p1.returncode, copied_count
     else:
-        count = int(stdout1.decode(
-            'utf-8').replace("COPY", "").replace("\n", ""))
-    return p1.returncode, count
+        logging_thread(f"Row count didn't match for copied: {table} {condition_string}. Retry.", thread)
+        return 2, copied_count
 
 
 def log_migration_jobs_status(thread, message, status, duration, count):

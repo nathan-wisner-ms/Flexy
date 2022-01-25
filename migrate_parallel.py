@@ -13,7 +13,7 @@ parser.add_argument(
     "-c",
     "--config-file",
     help="File Path of Source and Target Database Configuration",
-    required=True,
+    default="config.ini",
 )
 parser.add_argument(
     "-n",

@@ -1,21 +1,21 @@
 import argparse
+import logging
 import flexy_helper as helper
 import argparse
-import subprocess
-import sys
+from datetime import datetime
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "-c",
     "--config-file",
     help="File Path of Source and Target Database Configuration",
-    default="config.ini",
+    required=True
 )
 parser.add_argument(
     "-f",
     "--function",
     help="Function you want to run for pre-migration",
-    choices=("migrate_schema", "migrate_roles", "create_list", "create_parts"),
+    choices=("migrate_schema", "migrate_roles", "create_list", "create_parts", "create_slot", "create_snapshot", "drop_slot"),
     required=True
 )
 parser.add_argument(
@@ -37,7 +37,11 @@ args = parser.parse_args()
 MIGRATION_CONFIG = helper.build_config(args.config_file)
 
 def main():
-    if args.function == "create_parts"and not args.tables_file:
+    log_file = f'migration_logs_{args.function}_{datetime.now().strftime("%Y_%m_%d_%H_%M")}'
+    helper.setup_logging(log_file)
+    logging.debug(f"Log file: {log_file}")
+
+    if args.function == "create_parts" and not args.tables_file:
         print("Error: The following arguments are required: -t/--tables-file")
         quit()
 
@@ -54,7 +58,13 @@ def main():
             exit_code = helper.create_list_of_tables(args.config_file, MIGRATION_CONFIG["source"])
         if args.function == "create_parts":
             exit_code = helper.create_table_parts(MIGRATION_CONFIG, args.tables_file)
-    except subprocess.CalledProcessError as e:
+        if args.function == "drop_slot":
+            exit_code = helper.drop_replication_slot(MIGRATION_CONFIG["source"])
+        if args.function == "create_slot":
+            helper.create_replication_slot(MIGRATION_CONFIG)
+        if args.function == "create_snapshot":
+            helper.create_snapshot(MIGRATION_CONFIG["source"])
+    except Exception as e:
         print(helper.mask_credentail(e))
         raise Exception("Faile to complete {args.function}")
 

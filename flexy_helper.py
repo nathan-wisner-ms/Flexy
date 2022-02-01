@@ -1,7 +1,5 @@
-from cmath import log
 from configparser import ConfigParser
 from datetime import datetime, timedelta
-from os import strerror
 import time
 import urllib.parse
 import subprocess
@@ -9,20 +7,27 @@ import csv
 import logging
 import sys
 import re
+from itsdangerous import exc
 import psycopg2
 import math
+from psycopg2 import extras
+import os
+import re
+import json
+
+REPLICATION_SLOT_NAME = 'flexy_migration_slot'
 
 
-def setup_logging():
+def setup_logging(log_file=None):
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(
+            logging.FileHandler(log_file)
+        )
     logging.basicConfig(
         level=logging.DEBUG,
         format="[%(asctime)s][%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(
-                f'migration_logs_{datetime.now().strftime("%Y_%m_%d_%H_%M")}'
-            ),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=handlers,
     )
 
 
@@ -41,34 +46,37 @@ def build_config(config_file):
     return migration_config
 
 
-def build_connection_string(db_config):
-    conn_string = f'postgres://{urllib.parse.quote(db_config["user"])}:{urllib.parse.quote(db_config["password"])}'
-    conn_string += f'@{urllib.parse.quote(db_config["host"])}:{urllib.parse.quote(db_config["port"])}'
-    conn_string += f'/{urllib.parse.quote(db_config["database"])}'
+def build_connection_string(db_config, replication=False):
+    conn_string = f'host={db_config["host"]} port={db_config["port"]} dbname={db_config["database"]} user={db_config["user"]} password={db_config["password"]}'
     if db_config["sslmode"].strip():
-        conn_string += f'?sslmode={urllib.parse.quote(db_config["sslmode"])}'
+        conn_string += f' sslmode={db_config["sslmode"]}'
+    if replication:
+        conn_string += f' replication=database'
+    # conn_string = f'postgres://{urllib.parse.quote(db_config["user"])}:{urllib.parse.quote(db_config["password"])}'
+    # conn_string += f'@{urllib.parse.quote(db_config["host"])}:{urllib.parse.quote(db_config["port"])}'
+    # conn_string += f'/{urllib.parse.quote(db_config["database"])}'
+    # if db_config["sslmode"].strip():
+    #     conn_string += f'?sslmode={urllib.parse.quote(db_config["sslmode"])}'
     return conn_string
 
 
-def build_db_connection(db_config):
-    db_conn = psycopg2.connect(
-        database=db_config["database"], user=db_config["user"], password=db_config[
-            "password"], host=db_config["host"], port=db_config["port"]
-    )
+def build_db_connection(db_config, replication=False):
+    conn_string = build_connection_string(db_config)
+    db_conn = psycopg2.connect(conn_string)
+    if replication:
+        db_conn = psycopg2.connect(
+            conn_string, connection_factory=extras.LogicalReplicationConnection)
+    else:
+        db_conn = psycopg2.connect(conn_string)
     return db_conn
 
 
 def verify_db_connections(migration_config):
     for section in ["source", "target"]:
-        db_config = migration_config[section]
-        db_conn_string = build_connection_string(db_config)
-        print(
-            f"Verifying connection to {section} db: {mask_credentail(db_conn_string)}")
-        process = subprocess.Popen(
-            f'psql "{db_conn_string}" -c "SELECT version() AS {section}_db_version;"', stdout=True, stderr=True, shell=True)
-        process.communicate()
-        if 0 != process.returncode:
-            print(f"Failed to connect to {section} db: {db_conn_string}")
+        print(f"Verifying connection to {section} db ...")
+        db_conn = build_db_connection(migration_config[section])
+        if not db_conn:
+            print(f"Failed to connect to {section} db.")
             return False
     return True
 
@@ -116,7 +124,7 @@ def spit_out_schema_files(schema_file_name, config_file_name):
 
 def migrate_schema(config_file_name, create_indexes):
     migration_config = build_config(config_file_name)
-    source_conn_url = build_connection_string(migration_config["source"])
+    source_conn_url = build_connection_string(migration_config["source"], True)
     target_conn_url = build_connection_string(migration_config["target"])
     schema_file_name = f"schema_{config_file_name}.sql"
     print(
@@ -281,6 +289,25 @@ def get_duration(start_time):
         f'%H:%M:%S.{str(duration).split(".")[1][:3]}', time.gmtime(duration)
     )
 
+def check_migration_jobs_all_success(table_file):
+    try:
+        f1 = open("migration_jobs_status.tsv", "r")
+        rows = list(csv.DictReader(f1, delimiter="\t"))
+        jobs_already_success = set()
+        for row in rows:
+            if row["status"] == "success":
+                jobs_already_success.add(row["migration_job"])
+        f1.close()
+        f2 = open(table_file, "r")
+        lines = list(f2.read().splitlines())
+        f2.close()
+        for line in lines:
+            if line not in jobs_already_success:
+                return False
+        return True
+    except Exception as error:
+        return False
+
 
 def build_migration_jobs(table_file):
     jobs_request = []
@@ -300,16 +327,11 @@ def build_migration_jobs(table_file):
                 # schema.tablename|columnname|I|range1,
                 # schema.tablename|columnname|V|value
                 if line in jobs_tables_request_set:
-                    logging.warning(f"Duplicated table parition: {line}")
-                    return []
+                    raise Exception(f"Duplicated table parition: {line}")
                 jobs_tables_request_set.add(line.split("|")[0])
             else:
                 if line in jobs_tables_request_set:
-                    logging.warning(
-                        f"Duplicated table: {line}, conflict with partitioned migration jobs",
-                        "ERROR",
-                    )
-                    return []
+                    raise Exception(f"Duplicated table: {line}, conflict with partitioned migration jobs")
             jobs_tables_request_set.add(line)
             jobs_request.append(line)
     f.close()
@@ -339,16 +361,16 @@ def build_migration_jobs(table_file):
         else:
             migration_jobs_pending.append(job)
             logging.debug(f"Queue up migration job: {job}")
-    return migration_jobs_pending
+    return migration_jobs_pending, jobs_tables_request_set
 
 
-def execute_migration_job(thread, message, migration_config):
+def execute_migration_job(thread, message, migration_config, snapshot_name):
     for i in range(1, 4):
         start_time = time.time()
         try:
             log_migration_jobs_status(thread, message, "started", None, None)
             exit_code, count = migrate_copy_table(
-                thread, message, migration_config)
+                thread, message, migration_config, snapshot_name)
             if 0 == exit_code:
                 duration = get_duration(start_time)
                 log_migration_jobs_status(
@@ -390,67 +412,66 @@ def build_query_condition(column, type, value):
     return condition_string
 
 
-def migrate_copy_table(thread, message, migration_config):
-    source_conn_url = build_connection_string(migration_config["source"])
+def migrate_copy_table(thread, message, migration_config, snapshot_name):
+    source_conn_url = build_connection_string(migration_config["source"], True)
     target_conn_url = build_connection_string(migration_config["target"])
-    condition_string = ""
+    condition_string = None
     table = message
     if "|" in message:
         table, column, type, value = message.split("|")
         condition_string = build_query_condition(column, type, value)
-    cleanup_method = "DELETE FROM" if condition_string else "TRUNCATE"
-    cleanup_command = f'psql "{target_conn_url}" -c "{cleanup_method} {table} {condition_string};"'
+    delete_query = f"DELETE FROM {table}"
+    delete_query += condition_string if condition_string else " WHERE 1 = 1"
+    cleanup_command = f'psql "{target_conn_url}" -c "{delete_query};"'
 
-    logging_thread(
-        f'{cleanup_method} target table: {table} {condition_string} ...',
-        thread,
-    )
+    logging_thread(f"Cleaning up table in target: {delete_query} ...", thread)
     p0 = subprocess.Popen(
         cleanup_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     p0.wait()
     stdout0, stderr0 = p0.communicate()
-    logging_thread(
-        f"System output of {cleanup_method} table {table} {condition_string}: {stdout0}", thread)
+    logging_thread(f"System output of {delete_query}: {stdout0}", thread)
     if 0 != p0.returncode:
         error_message = stderr0.decode("utf-8")
         logging.error(
-            f"Failed to {cleanup_method} for table: {message}, error: {mask_credentail(error_message)}")
+            f"Failed to DELETE FROM for table: {message}, error: {mask_credentail(error_message)}")
         if "does not exist" in error_message:
             raise Exception(f"table {table} does not exist")
         return p0.returncode, None
-
-    logging_thread(f"Copying table: {table} {condition_string} ... ", thread)
-    select_query = f"\COPY (SELECT * from {table} {condition_string}) TO STDOUT;"
-    read_query = f'psql "{source_conn_url}" -c "{select_query}"'
-    write_query = f'psql "{target_conn_url}" -c "\COPY {table} FROM STDIN;"'
-    copy_command = f"{read_query} | {write_query}"
-    p1 = subprocess.Popen(copy_command, stdout=subprocess.PIPE,
+    select_query = f'SELECT * FROM {table} '
+    if condition_string:
+        select_query += condition_string
+    logging_thread(f"Copying table from source: {select_query} ...", thread)
+    copy_query = f"""\COPY ({select_query}) TO PROGRAM 'psql \\"{target_conn_url}\\" -c \\"\COPY {table} FROM STDIN;\\"'"""
+    command = f'./query_snapshot.sh "{source_conn_url}" "{snapshot_name}" "{copy_query}"'
+    p1 = subprocess.Popen(command, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, shell=True)
     p1.wait()
     stdout1, stderr1 = p1.communicate()
     logging_thread(
-        f"System output of \COPY table: {table} {condition_string}: {stdout1}", thread)
+        f"System output of \COPY table: {select_query}: {stdout1}", thread)
     if 0 != p1.returncode:
         logging.error(
             f"Failed to copy for table: {table}, error: {mask_credentail(stderr1.decode('utf-8'))}")
         return p1.returncode, None
-
-    copied_count = int(stdout1.decode(
-        'utf-8').replace("COPY", "").replace("\n", ""))
-    logging_thread(f"Comparing row count from source table: {table} {condition_string} ...", thread)
-    source_conn = build_db_connection(migration_config["source"])
-    source_cursor = source_conn.cursor()
-    source_cursor.execute("""SET max_parallel_workers_per_gather = 30;""")
-    source_conn.commit()
-    source_cursor.execute(f"""SELECT COUNT(1) FROM {table} {condition_string};""")
-    source_count = source_cursor.fetchone()[0]
-    source_conn.close()
-    if source_count == copied_count:
-        logging_thread(f"Row count matched for copied: {table} {condition_string}", thread)
-        return p1.returncode, copied_count
-    else:
-        logging_thread(f"Row count didn't match for copied: {table} {condition_string}. Retry.", thread)
-        return 2, copied_count
+    output_rows = stdout1.decode('utf-8').split("\n")
+    print(output_rows)
+    if len(output_rows) == 5:
+        copied_count = int(output_rows[3].replace("COPY ", ""))
+    logging_thread(
+        f"Comparing row count from source table: {select_query} ...", thread)
+    return p1.returncode, copied_count
+    # TODO: COMPARE ROW COUNT
+    # source_conn = build_db_connection(migration_config["source"], True)
+    # source_cursor = source_conn.cursor()
+    # source_cursor.execute(f"""SELECT COUNT(1) FROM {table} {condition_string};""")
+    # source_count = source_cursor.fetchone()[0]
+    # source_conn.close()
+    # if source_count == copied_count:
+    #     logging_thread(f"Row count matched for copied: {table} {condition_string}", thread)
+    #     return p1.returncode, copied_count
+    # else:
+    #     logging_thread(f"Row count didn't match for copied: {table} {condition_string}. Retry.", thread)
+    #     return 2, copied_count
 
 
 def log_migration_jobs_status(thread, message, status, duration, count):
@@ -463,3 +484,172 @@ def log_migration_jobs_status(thread, message, status, duration, count):
 def mask_credentail(message):
     messages = str(message).split()
     return " ".join([re.sub(r'postgres://.*@', 'postgres://<USERNAME>:<PASSWORD>@', m) for m in messages])
+
+
+def create_snapshot(db_config):
+    #TODO: create snapshot for offline migration
+    db_conn = build_db_connection(db_config)
+    db_cur = db_conn.cursor()
+    db_conn.autocommit = True
+    db_cur.execute(f"")
+
+
+def drop_replication_slot(db_config):
+    db_conn_string = build_connection_string(db_config)
+    logging.debug(f"Dropping replication slot: {REPLICATION_SLOT_NAME}")
+    exit_code = subprocess.call(
+        f'psql "{db_conn_string}" -c "SELECT pg_drop_replication_slot(\'{REPLICATION_SLOT_NAME}\');"',
+        stdout=True,
+        stderr=True,
+        shell=True,
+    )
+    return exit_code
+
+
+def create_replication_slot(migration_config):
+    target_db_config = migration_config["target"]
+    target_db_conn_string = build_connection_string(target_db_config)
+    logging.debug("Creating table in target: migration_cdc_logs")
+    subprocess.call(
+        f'psql "{target_db_conn_string}" < create_migration_cdc_logs.sql',
+        stdout=True,
+        stderr=True,
+        shell=True,
+    )
+    source_db_config = migration_config["source"]
+    logging.debug(
+        f"Creating replication slot:{REPLICATION_SLOT_NAME} and exporting snapshot ...")
+    source_db_conn = build_db_connection(source_db_config, True)
+    source_db_cur = source_db_conn.cursor(cursor_factory=extras.DictCursor)
+    source_db_cur.execute(
+        f'CREATE_REPLICATION_SLOT {REPLICATION_SLOT_NAME} LOGICAL wal2json EXPORT_SNAPSHOT;')
+    row = dict(source_db_cur.fetchone())
+    logging.info(row)
+    f = open(f"migration_snapshot.tsv", "w+")
+    writer = csv.writer(f, delimiter="\t")
+    header = ["slot_name", "consistent_point",
+              "snapshot_name", "output_plugin"]
+    writer.writerow(header)
+    writer.writerow([row[h] for h in header])
+    f.close()
+    while True:
+        logging.debug("keep transaction snapshot live ...")
+        time.sleep(60)
+
+
+def start_replication(migration_config, tables):
+    cdc_dir = migration_config["local"]["cdc_dir"]
+    logging.info(
+        f'Start receiving replication messages and write to local dir: {cdc_dir} ...')
+    source_conn = build_db_connection(migration_config["source"], True)
+    source_cursor = source_conn.cursor()
+    source_cursor.start_replication(slot_name=f'{REPLICATION_SLOT_NAME}',
+                                    options={'include-timestamp': 1,
+                                             'include-lsn': 1,
+                                             'add-tables': ",".join(tables)},
+                                    decode=True, status_interval=30)
+    target_conn = build_db_connection(migration_config["target"])
+    target_cursor = target_conn.cursor()
+
+    def write_to_file(msg):
+        msg_obj_string = str(msg)
+        m = re.match(
+            r".* data_start: (?P<data_start>.*); wal_end:.*", msg_obj_string)
+        lsn = m.group("data_start")
+        convert_time_string = str(msg.send_time).replace(
+            '-', '').replace(' ', '').replace(':', '')
+        file_path = f"{cdc_dir}/{convert_time_string}_{msg.data_start}"
+        target_cursor.execute(f"""
+        INSERT INTO migration_cdc_logs(lsn_0, lsn_1, data_size, received_at, file_path)
+        VALUES ('{lsn}', '{msg.data_start}', {msg.data_size}, '{msg.send_time}', '{file_path}')
+        ON CONFLICT(lsn_0) DO NOTHING;
+        """)
+        insert_count = target_cursor.rowcount
+        if not insert_count:
+            logging.warn(
+                f"Skip duplicate message lsn: {lsn}, {msg.data_start}")
+            return
+        target_conn.commit()
+        logging.debug(
+            f"Received: {msg_obj_string}, lsn:{msg.data_start}, send_time: {msg.send_time}")
+        f = open(file_path, "w+")
+        f.write(msg.payload)
+        f.close()
+        logging.info(f"Write change message to {file_path}")
+        msg.cursor.send_feedback(flush_lsn=msg.data_start)
+    source_cursor.consume_stream(write_to_file)
+
+
+def handle_record(record, conn, tables):
+    db_cursor = conn.cursor()
+    file_path = record["file_path"]
+    logging.debug(f'Handling message lsn: {record["lsn_0"]}, received_at: {record["received_at"]},'
+                  f' data_size: {record["data_size"]}, file_path: {file_path}')
+    message = json.load(open(file_path, 'r'))
+    if "change" in message and message["change"]:
+        for each in message["change"]:
+            if each["kind"] == "insert":
+                table = f'{each["schema"]}.{each["table"]}'
+                if table not in tables:
+                    continue
+                columnnames = each["columnnames"]
+                columnvalues = each["columnvalues"]
+                insert_query = f'INSERT INTO {table} ({", ".join(columnnames)}) VALUES {tuple(columnvalues)} ;'
+                db_cursor.execute(insert_query)
+            if each["kind"] == "update":
+                table = f'{each["schema"]}.{each["table"]}'
+                if table not in tables:
+                    continue
+                columnnames = each["columnnames"]
+                columnvalues = each["columnvalues"]
+                keynames = each["oldkeys"]["keynames"]
+                keyvalues = each["oldkeys"]["keyvalues"]
+                set_names = ", ".join([f'{name} = %s' for name in columnnames])
+                where_names = " AND ".join(
+                    [f'{name} = %s' for name in keynames])
+                update_query = f'UPDATE {table} SET {set_names} WHERE {where_names} ;'
+                db_cursor.execute(update_query, tuple(
+                    columnvalues + keyvalues))
+            if each["kind"] == "delete":
+                table = f'{each["schema"]}.{each["table"]}'
+                if table not in tables:
+                    continue
+                keynames = each["oldkeys"]["keynames"]
+                keyvalues = each["oldkeys"]["keyvalues"]
+                where_names = " AND ".join(
+                    [f'{name} = %s' for name in keynames])
+                delete_query = f'DELETE FROM {table} WHERE {where_names} ;'
+                db_cursor.execute(delete_query, tuple(keyvalues))
+    log_update_query = f'UPDATE migration_cdc_logs SET proceeded_at = NOW() WHERE change_id = {record["change_id"]} ;'
+    db_cursor.execute(log_update_query)
+    conn.commit()
+    os.remove(file_path)
+
+
+def process_replication(migration_config, tables, tables_file):
+    while not check_migration_jobs_all_success(tables_file):
+        logging.debug("Migration jobs not fully complete, do not start process replication message. Sleep for 1 mintue.")
+        time.sleep(60)
+    logging.info("Initial loading is completed. Start processing replication messages ...")
+    target_conn = build_db_connection(migration_config["target"])
+    target_cursor = target_conn.cursor(cursor_factory=extras.DictCursor)
+    # Fetch 1000 rows
+    query = """
+    SELECT * FROM migration_cdc_logs 
+    WHERE proceeded_at IS NULL
+    ORDER BY change_id
+    LIMIT 1000;
+    """
+    while True:
+        logging.debug("Fetching next 1000 unproceeded messages ...")
+        target_cursor.execute(query)
+        row_count = target_cursor.rowcount
+        if not row_count:
+            logging.debug("No unproceeded message. Sleep 30 seconds ...")
+            time.sleep(30)
+        logging.debug(f"Retrived unproceeded message(s): {row_count}.")
+        row = target_cursor.fetchone()
+        while row:
+            record = dict(row)
+            handle_record(record, target_conn, tables)
+            row = target_cursor.fetchone()

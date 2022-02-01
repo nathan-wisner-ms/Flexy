@@ -7,13 +7,13 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     git clone https://github.com/ljiang001/Flexy.git\
 ```
 * Install the following if not yet installed.
-    * python3
+    * python3.8
     * postgresql-client
     * pip3
 * `cd` to the folder
 * Install python packages:
 ```
-    pip3 intsall -r requirements.txt
+    pip3 install -r requirements.txt
 ```  
 ### Pre-Migration
 1. Config: Fill source/target db configuration in the `config.ini`. Can copy to any new config file for different migration project but must follow the template.

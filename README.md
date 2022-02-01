@@ -13,7 +13,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
 * `cd` to the folder
 * Install python packages:
 ```
-    pip3 intsall -r requirements.txt
+    pip3 install -r requirements.txt
 ```  
 ### Pre-Migration
 1. Config: Fill source/target db configuration in the `config.ini`. Can copy to any new config file for different migration project but must follow the template.
@@ -26,7 +26,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * *Flags:*
         * required: `--function` (`-f`)(choice: `migrate_schema`, `create_list`, `create_parts`)
         * optional:
-            * `--config-file`(`-i`) (default: `config.ini`)
+            * `--config-file`(`-c`) (default: `config.ini`)
             * `--indexes=True`(`-i`) (default: `False`)
     * This command will generate 3 files:
         * `schema_{config-file-name}.sql`

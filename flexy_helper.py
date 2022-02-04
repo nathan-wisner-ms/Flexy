@@ -93,7 +93,7 @@ def spit_out_schema_files(schema_file_name, config_file_name):
     for query in queries:
         is_index_query = False
         for line in query:
-            if "CREATE INDEX" in line or "CREATE UNIQUE INDEX" in line:
+            if "CREATE INDEX" in line or "CREATE UNIQUE INDEX" in line or "ALTER INDEX" in line:
                 is_index_query = True
                 queries_index.append(query)
                 break

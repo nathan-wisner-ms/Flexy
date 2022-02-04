@@ -9,22 +9,35 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
 * Install the following if not yet installed.
     * python3
     * postgresql-client
-    * pip3
+    * pip3 or pip 
 * `cd` to the folder
 * Install python packages:
-```
-    pip3 install -r requirements.txt
-```  
+
+    ```pip3 install -r requirements.txt ```
+     **or**
+    ```pip install -r requirements.txt```  
+    
 ### Pre-Migration
 1. Config: Fill source/target db configuration in the `config.ini`. Can copy to any new config file for different migration project but must follow the template.
+ * The config details can be found in the **Connection String** settings for each database under **PSQL**. The details for **source** should be the Single Server and the details for **destination** should be the Flexible Server
+
 2. Migrate Schema (skip if tables already migrated)
     * Create target database in target db server
     * Migrate schema:<br>
      ```
      python3 pre_migration.py --config-file=yourconfigfile --function=migrate_schema
      ```
-    * *Flags:*
-        * required: `--function` (`-f`)(choice: `migrate_schema`, `create_list`, `create_parts`)
+    * Example:
+     ```
+     python3 pre_migration.py --config-file=config.ini --function=migrate_schema
+     ```
+    
+    * *Possible Error Message*
+        * An error detailing ``` no pg_hba.conf exists for {your ip address} ``` means you need to allow your IP inside your database 
+            * This can be done by going into Networking for Flexible Server and Connection Secuirty for Single Server and **Allow public access to Azure Services** along with **Add Current Client IP**
+   
+   * *Flags:*
+        * required: `--function` (`-f`)(choices: `migrate_schema`, `create_list`, `create_parts`)
         * optional:
             * `--config-file`(`-c`) (default: `config.ini`)
             * `--indexes=True`(`-i`) (default: `False`)

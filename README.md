@@ -13,9 +13,10 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
 * `cd` to the folder
 * Install python packages:
 
-    ```pip3 install -r requirements.txt ```
-     **or**
-    ```pip install -r requirements.txt```  
+    * ```pip3 install -r requirements.txt ``` **or** ```pip install -r requirements.txt``` 
+* Also install using **sudo apt** to update python to the latest version
+    * ```sudo apt update```
+    * ```sudo apt install python3.9 ```
     
 ### Pre-Migration
 1. Config: Fill source/target db configuration in the `config.ini`. Can copy to any new config file for different migration project but must follow the template.

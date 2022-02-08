@@ -70,9 +70,10 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         * `tables_size_{config-file-name}.tsv`
     * Query used in the function: 
     ```
-    SELECT schemaname||'.'||relname as schema_table, pg_size_pretty(pg_relation_size(relid)) AS data_size
-    FROM pg_catalog.pg_statio_user_tables
-    ORDER BY pg_relation_size(relid) DESC;
+    SELECT schemaname||'.'||tablename as schema_table, pg_size_pretty(pg_relation_size(schemaname||'.'||tablename::varchar)) AS data_size
+    FROM pg_catalog.pg_tables   
+    WHERE schemaname != 'information_schema' AND schemaname !=  'pg_catalog'  
+    ORDER BY pg_relation_size(schemaname||'.'||tablename::varchar) DESC;
      ```
 4. (optional) Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
     * Create a file containing tables and columns, each line formatted as following:

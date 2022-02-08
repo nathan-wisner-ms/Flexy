@@ -152,9 +152,10 @@ def migrate_roles(config_file_name):
 def create_list_of_tables(config_file, source_db_config):
     source_db_conn = build_db_connection(source_db_config)
     query_tables_order_by_size = """
-     SELECT schemaname||'.'||relname as schema_table, pg_size_pretty(pg_relation_size(relid)) AS data_size
- FROM pg_catalog.pg_statio_user_tables
- ORDER BY pg_relation_size(relid) DESC;
+     SELECT schemaname||'.'||tablename as schema_table, pg_size_pretty(pg_relation_size(schemaname||'.'||tablename::varchar)) AS data_size
+FROM pg_catalog.pg_tables   
+WHERE schemaname != 'information_schema' AND schemaname !=  'pg_catalog'  
+ORDER BY pg_relation_size(schemaname||'.'||tablename::varchar) DESC;
     """
     print("Fetching list of tables from source db order by data size ...")
     source_cursor = source_db_conn.cursor()

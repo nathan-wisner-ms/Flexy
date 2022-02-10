@@ -171,8 +171,8 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         ```
         6. Save and exit the screen.
         * **Note**:
-          * If error in initial migration, re-run the command to resume migration and consuming replication
-          * If seeing error in consuming replication, check the file where it fails. and you can remove the file if the change message in the file can be ignore, then re-run the command to continue.
+          * If error in initial migration stage, re-run the command to resume migration, the function skip migration for already succeeded tables, and will start consuming replication after all successfully migrated
+          * If seeing error in consuming replication stage, check the file where it fails. and you can remove the file if the change message in the file can be ignore, then re-run the command to continue.
           * Warnning: can only run one consume command at a time. Make sure no same process is running at the same time, check by `ps aux | grep consume`
 
     * *Flags* in migrate.py:

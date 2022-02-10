@@ -161,14 +161,19 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         python3 migrate.py --config-file=yourconfigfile --queue-file=yourtablesfile --replication=start
         ```
         3. Save and exit the screen: hit `ctrl+A+D`
-        4. Start initial data loading and start consuming message after all complete. 
+        4. Start a new screen session:
+        ```
+        screen -S migrate
+        ```
+        5. In the screen session, start initial data loading and start consuming message after all complete. 
         ```
         python3 migrate.py --config-file=yourconfigfile --queue-file=yourtablesfile --replication=consume
         ```
+        6. Save and exit the screen.
         * **Note**:
-          * for large database migration, you should run migration in a new screen in order to save and recover later
           * If error in initial migration, re-run the command to resume migration and consuming replication
           * If seeing error in consuming replication, check the file where it fails. and you can remove the file if the change message in the file can be ignore, then re-run the command to continue.
+          * Warnning: can only run one consume command at a time. Make sure no same process is running at the same time, check by `ps aux | grep consume`
 
     * *Flags* in migrate.py:
         * required: `--queue-file`(`-q`)
@@ -184,7 +189,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         * Any migration jobs logged as `success` in `migration_jobs_status.tsv` will not be re-migrated
         * To re-run the whole migration process, remove `migration_jobs_status.tsv`
 * Logging
-    * You can check logs saved in `migration_logs_{date}` during/after migration.
+    * You can check logs saved in `{logs_dir}/logs_{function}_{date}_{PROJECT_ID}` during/after migration.
 * Monitor
     * Monitor CPUs in your source/target db servers
 * Add indexes during migration

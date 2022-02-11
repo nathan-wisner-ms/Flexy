@@ -189,17 +189,25 @@ def create_list_of_tables(config_file, source_db_config):
     logging.info(f"Writing data to files: {filename1}, {filename2}")
     f1 = open(filename1, "w+")
     f2 = open(filename2, "w+")
-    f3 = open("primaryCheck.txt", "w+")
+    
+    #TODO: Will add after implemntation of primary key validation is finished
+    #f3 = open("primaryCheck.txt", "w+")
+    
     writer2 = csv.writer(f2, delimiter="\t")
     writer2.writerow(["schema_table", "data_size"])
     for row in rows:
         f1.write(f"{row[0]}\n")
-        hasPrimary,results = check_table_primary(row[0], source_cursor)
-        f3.write(f"{row[0]} having a primary key is {hasPrimary} and results are {results}\n")
+        
+        #TODO: Will add after implemntation of primary key validation is finished
+        #hasPrimary,results = check_table_primary(row[0], source_cursor)
+        #f3.write(f"{row[0]} having a primary key is {hasPrimary} and results are {results}\n")
+        
         writer2.writerow(row)
     f1.close()
     f2.close()
-    f3.close()
+    
+    #TODO: Will add after implemntation of primary key validation is finished
+    #f3.close()
     return 0
 
 

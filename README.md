@@ -77,22 +77,24 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     ORDER BY pg_relation_size(schemaname||'.'||tablename::varchar) DESC;
     ```
     * You can also manually create a file containing tables. see format in step 5.  
-4. (optional) Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
-    * Create a file containing tables and columns, each line formatted as following:
-    ```
-    schemaname.tablename|columnname
-    ```
-    * Create parts:
-    ```
-    python3 pre_migration.py --config-file=yourconfigfile --function=create_parts --tables-file=yourtablefile
-    ```
-    * This command will generate a file containing a list of migration job string that can be used in the `migrate.py` function, which divide a large table into multiple migration jobs based on the watermark column and table size.  
+4. Create partitions for large tables based on an indexed monotonically increasing column (id) OR a timestamp column
+    * **This step is REQUIRED for tables over 10GB and OPTIONAL for tables under 10GB**
+        * Create a file containing tables and columns, each line formatted as following:
+        ```
+        schemaname.tablename|columnname
+        ```
+        * Create parts:
+        ```
+        python3 pre_migration.py --config-file=yourconfigfile --function=create_parts --tables-file=yourtablefile
+        ```
+        * This command will generate a file containing a list of migration job string that can be used in the `migrate.py` function, which divide a large table into multiple   migration jobs based on the watermark column and table size.  
     * Create the index for the column if not yet created in source and target tables 
     * **Note**: 
         * strongly recommand for table size large than 100 GB
         * Recommand for table size large than 50 GB
         * The function assumes the data are evenly distributed by the id/timestamp. The average size of each chunk will be 10 GB. 
 5. Combine the file from step 3 and 4, create a file for selected tables to migrate:
+    * If all tables in your DB are under 10GB , you do not have to combine files. Just use the generated .ini file if your tables are all under 10GB each. **If your max table size is under 10GB, skip to the next step**
     * Four different string formats are accepted in each line <br>
         | line in file | translation in program |
         | -----------  |----------- |
@@ -110,7 +112,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
          public.customers|country|V|US
          ```  
     * **Tips**: <br>
-        * Put the large partitioned tables together on the top. The rest should sort by descending data size. 
+        Put the large partitioned tables together on the top. The rest should sort by descending data size. 
 4. Disable triggers and foreign keys validation
     * In target server: Change server parameter `session_replication_role` TO `REPLICA` in global server level
 5. Optional performance tuning:
@@ -131,7 +133,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         ```
         * Save and exit the session: keyboard `ctrl+A+D`
         * **Note**:
-            * This screen session need to be keep live in the initial data loading process
+        
             * to restart the whole migration process and re-create slot, drop slot first
             ```
             python3 pre_migration.py --config-file=yourconfigfile --function=drop_slot

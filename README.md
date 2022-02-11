@@ -110,7 +110,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
          public.customers|country|V|US
          ```  
     * **Tips**: <br>
-        Put the large partitioned tables together on the top. The rest should sort by descending data size. 
+        * Put the large partitioned tables together on the top. The rest should sort by descending data size. 
 4. Disable triggers and foreign keys validation
     * In target server: Change server parameter `session_replication_role` TO `REPLICA` in global server level
 5. Optional performance tuning:
@@ -131,7 +131,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         ```
         * Save and exit the session: keyboard `ctrl+A+D`
         * **Note**:
-        
+            * This screen session need to be keep live in the initial data loading process
             * to restart the whole migration process and re-create slot, drop slot first
             ```
             python3 pre_migration.py --config-file=yourconfigfile --function=drop_slot

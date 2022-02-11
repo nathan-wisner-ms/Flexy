@@ -1,5 +1,6 @@
 # Flexy
 ## Introduction
+
 A command-line tool for faster PG to PG offline parallel migration. Run from any VM that can use `psql` to connect to migrating db servers.
 ## (Optional) Setting up your VM if you have none already
 
@@ -24,7 +25,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
 * `cd` to the **Flexy** folder
 * Install python packages:
     * ```pip3 install -r requirements.txt ``` **or** ```pip install -r requirements.txt``` 
-  
+
 * Also install using **sudo apt** to update python to the latest version
     * ```sudo apt update```
     * ```sudo apt install python3.9 ```
@@ -91,6 +92,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     ORDER BY pg_relation_size(schemaname||'.'||tablename::varchar) DESC;
     ```
     * You can also manually create a file containing tables. see format in step 5.  
+
 4. **Required for tables larger than 10GB, otherwise optional** Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
     * Create a file containing tables and columns, each line formatted as following:
     ```

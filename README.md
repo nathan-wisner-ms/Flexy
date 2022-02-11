@@ -1,6 +1,17 @@
 # Flexy
 ## Introduction
 A command-line tool for faster PG to PG offline parallel migration. Run from any VM that can use `psql` to connect to migrating db servers.
+## Setting up your VM
+
+* Download Virtual Box on your host: https://www.virtualbox.org/wiki/Downloads
+* Download the Ubuntu ISO that is the LTS version: https://ubuntu.com/download/desktop
+* Inside Virtual Box, click the machine tab and select New
+    * For name, type anything, I usually choose Ubuntu
+    * The location is just a preference so the default is fine
+    * Select **Linux** as the type
+    * Select either **Ubunutu 64 bit** or **Ubuntu 32 bit** for version depending on your processor
+* From here you can setup Linux as normal and continue onto the setup defined below
+
 ## Set up
 * In your vm workspace, 
 ```
@@ -10,11 +21,10 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     * python3
     * postgresql-client
     * pip3 or pip 
-* `cd` to the folder
+* `cd` to the **Flexy** folder
 * Install python packages:
-
-
     * ```pip3 install -r requirements.txt ``` **or** ```pip install -r requirements.txt``` 
+  
 * Also install using **sudo apt** to update python to the latest version
     * ```sudo apt update```
     * ```sudo apt install python3.9 ```
@@ -81,7 +91,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
     ORDER BY pg_relation_size(schemaname||'.'||tablename::varchar) DESC;
     ```
     * You can also manually create a file containing tables. see format in step 5.  
-4. (optional) Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
+4. **Required for tables larger than 10GB, otherwise optional** Create partitions for large tables based on an indexed monotonically increasing column (e.g., id column) (OR) a timestamp column (e.g., created_at, updated_at, etc). 
     * Create a file containing tables and columns, each line formatted as following:
     ```
     schemaname.tablename|columnname
@@ -117,7 +127,7 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
         * Put the large partitioned tables together on the top. The rest should sort by descending data size. 
 4. Disable triggers and foreign keys validation
     * In target server: Change server parameter `session_replication_role` TO `REPLICA` in global server level
-5. Optional performance tuning:
+5. *Optional* performance tuning:
     * In target server: Increase `max_wal_size` to largest value
     * In target server: Increase `maintenance_work_mem` to largest value
     * In target & source servers: Increase `max_parallel_workers_per_gather`

@@ -176,12 +176,16 @@ A command-line tool for faster PG to PG offline parallel migration. Run from any
           * Warnning: can only run one consume command at a time. Make sure no same process is running at the same time, check by `ps aux | grep consume`
 
     * *Flags* in migrate.py:
-        * required: `--queue-file`(`-q`)
+        * use `python3 migrate.py --help` to see details
+        * required:
+            * `--config-file` (`-c`)
+            *  `--queue-file`(`-q`)
         * optional:
-            * `--config-file` (`-c`) (default: config.ini) 
             * `--number-thread` (`-n`) (default: `20`)
-        * optional:
+            * `--log-level` (`-l`) (default:`INFO`, choice: `INFO`, `DEBUG`)
+            for online migration:
             * `--replication` (`-r`) (choice: consume, start)
+            * `--batch-size` (`-b`) (default: `500`)
     * In each migration, each table will be truncated or deleted for the partitoned part
     * Tracking job status
         * The status of each migration job will be appended to local file `migration_jobs_status.tsv`.

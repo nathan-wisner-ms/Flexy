@@ -1,7 +1,7 @@
 # Flexy
 ## Introduction
 A command-line tool for faster PG to PG offline parallel migration. Run from any VM that can use `psql` to connect to migrating db servers.
-## Setting up your VM
+## (Optional) Setting up your VM if you have none already
 
 * Download Virtual Box on your host: https://www.virtualbox.org/wiki/Downloads
 * Download the Ubuntu ISO that is the LTS version: https://ubuntu.com/download/desktop

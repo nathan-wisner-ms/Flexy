@@ -164,6 +164,14 @@ def migrate_roles(config_file_name):
     # TODO
     print("This feature is to be implemented. ")
 
+def check_table_primary(table_name, cursor):
+    query = f"SHOW KEYS FROM {table_name} WHERE Key_name = 'PRIMARY'"
+    cursor.execute(query)
+    results = cursor.fetchall()
+    if len(results) > 0:
+        return True, results
+    return False, results
+
 
 def create_list_of_tables(config_file, source_db_config):
     source_db_conn = build_db_connection(source_db_config)
@@ -181,13 +189,17 @@ def create_list_of_tables(config_file, source_db_config):
     logging.info(f"Writing data to files: {filename1}, {filename2}")
     f1 = open(filename1, "w+")
     f2 = open(filename2, "w+")
+    f3 = open("primaryCheck.txt", "w+")
     writer2 = csv.writer(f2, delimiter="\t")
     writer2.writerow(["schema_table", "data_size"])
     for row in rows:
         f1.write(f"{row[0]}\n")
+        hasPrimary,results = check_table_primary(row[0], source_cursor)
+        f3.write(f"{row[0]} having a primary key is {hasPrimary} and results are {results}\n")
         writer2.writerow(row)
     f1.close()
     f2.close()
+    f3.close()
     return 0
 
 
